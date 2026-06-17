@@ -1,0 +1,38 @@
+services:
+  api-1: &api
+    build:
+      context: ./api
+    image: swat-api:latest
+    environment:
+      API_ADDR: :8080
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-102400}
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  api-2:
+    <<: *api
+
+  api-3:
+    <<: *api
+
+  api-4:
+    <<: *api
+
+  api-5:
+    <<: *api
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    depends_on:
+      - api-1
+      - api-2
+      - api-3
+      - api-4
+      - api-5
+    ports:
+      - "8080:8080"
+      - "8404:8404"
+    volumes:
+      - ./infra/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    restart: unless-stopped

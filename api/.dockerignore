@@ -1,0 +1,9 @@
+.git
+.gitignore
+Dockerfile
+README.md
+tmp
+coverage.out
+*.test
+*.log
+.DS_Store
