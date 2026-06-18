@@ -71,16 +71,21 @@ export API_IMAGE=<dockerhub-username>/swat-api:1.0.0
 export FRONTEND_IMAGE=<dockerhub-username>/swat-frontend:1.0.0
 ```
 
-Log in, build, and push only the project-owned images (skip `haproxy`):
+Log in, build, and push the project-owned images:
 
 ```sh
 docker login
 docker compose -f docker-compose.yml -f docker-compose.build.yml build api-1 frontend
-docker compose push api-1 frontend
+docker push "$API_IMAGE"
+docker push "$FRONTEND_IMAGE"
 ```
 
-The five `api-*` services share `API_IMAGE`, so building/pushing `api-1`
-covers all of them.
+The five `api-*` services share `API_IMAGE`, so building/pushing it covers
+all of them.
+
+Note: `docker compose push` is skipped when Docker Desktop uses the
+containerd image store (it does not upload the buildkit manifest list), so
+push the images directly with `docker push` (what `make push` does).
 
 For a server on a different CPU architecture (e.g. building on Apple
 Silicon for an amd64 host), build and push multi-arch images with buildx:

@@ -3,7 +3,6 @@ export
 
 COMPOSE := docker compose
 BUILD_FILES := -f docker-compose.yml -f docker-compose.build.yml
-PUSH_SERVICES := api-1 frontend
 PLATFORMS ?= linux/amd64,linux/arm64
 VITE_API_BASE_URL ?= http://localhost:8080
 
@@ -27,7 +26,8 @@ pull: ## Pull images from the registry
 	$(COMPOSE) pull
 
 push: build ## Build and push project images (api + frontend) to the registry
-	$(COMPOSE) push $(PUSH_SERVICES)
+	docker push $(API_IMAGE)
+	docker push $(FRONTEND_IMAGE)
 
 release: login push ## Log in, build, and push project images
 
