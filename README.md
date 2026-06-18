@@ -6,7 +6,7 @@ Testbed for verifying TPS scalability of weighing-related APIs.
 
 - `api`: Go API server for weighing certificate upload and weighing data endpoints.
 - `frontend`: React/Vite web test console for API smoke tests.
-- `haproxy`: load balancer in front of three API containers.
+- `haproxy`: load balancer in front of five API containers.
 
 ## Start API
 
@@ -17,9 +17,9 @@ cd api
 go run ./cmd/server
 ```
 
-### Docker Compose With HAProxy
+### Docker Compose With HAProxy And Frontend
 
-Run HAProxy plus three API containers:
+Run HAProxy plus five API containers and the frontend:
 
 ```sh
 docker compose up --build
@@ -32,6 +32,7 @@ MAX_UPLOAD_BYTES=150000 docker compose up --build
 ```
 
 The public API endpoint is HAProxy on `http://localhost:8080`.
+The frontend is served on `http://localhost:3000`.
 
 ```sh
 curl -i http://localhost:8080/health
@@ -48,6 +49,24 @@ npm run dev
 ```
 
 The frontend defaults to `http://localhost:8080` for API calls. Override it with `VITE_API_BASE_URL` when needed.
+
+### Frontend Container Only
+
+```sh
+docker compose up --build frontend
+```
+
+Override the browser-facing frontend port:
+
+```sh
+FRONTEND_PORT=5173 docker compose up --build frontend
+```
+
+For container builds, `VITE_API_BASE_URL` is baked into the static frontend bundle:
+
+```sh
+VITE_API_BASE_URL=http://172.16.0.90:8080 docker compose up --build frontend
+```
 
 ## Image Upload Load Test
 
