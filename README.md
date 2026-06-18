@@ -19,16 +19,20 @@ go run ./cmd/server
 
 ### Docker Compose With HAProxy And Frontend
 
-Run HAProxy plus five API containers and the frontend:
+`docker-compose.yml` only references images, so it can run from prebuilt
+Docker Hub images. `docker-compose.build.yml` adds the build context for
+building from source.
+
+Build and run locally from source:
 
 ```sh
-docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
 ```
 
 Override the upload size limit in bytes:
 
 ```sh
-MAX_UPLOAD_BYTES=150000 docker compose up --build
+MAX_UPLOAD_BYTES=150000 docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
 ```
 
 The public API endpoint is HAProxy on `http://localhost:8080`.
@@ -39,6 +43,73 @@ curl -i http://localhost:8080/health
 ```
 
 HAProxy stats are available at `http://localhost:8404`.
+
+### Makefile Shortcuts
+
+A `Makefile` wraps the common Docker workflows. It auto-loads `.env`, so set
+`API_IMAGE` / `FRONTEND_IMAGE` there first. Run `make help` for the full list.
+
+```sh
+make build           # build images from source
+make up-build        # build from source and start the stack (-d)
+make push            # build and push api + frontend images
+make release         # docker login + build + push
+make push-multiarch  # buildx multi-arch build and push
+make pull            # pull images from the registry
+make run             # start the stack from registry images (-d)
+make down            # stop and remove the stack
+make logs            # tail service logs
+```
+
+### Publish Images To Docker Hub
+
+Set the image references first. Copy `.env.example` to `.env` and replace
+`<dockerhub-username>`, or export them inline:
+
+```sh
+export API_IMAGE=<dockerhub-username>/swat-api:1.0.0
+export FRONTEND_IMAGE=<dockerhub-username>/swat-frontend:1.0.0
+```
+
+Log in, build, and push only the project-owned images (skip `haproxy`):
+
+```sh
+docker login
+docker compose -f docker-compose.yml -f docker-compose.build.yml build api-1 frontend
+docker compose push api-1 frontend
+```
+
+The five `api-*` services share `API_IMAGE`, so building/pushing `api-1`
+covers all of them.
+
+For a server on a different CPU architecture (e.g. building on Apple
+Silicon for an amd64 host), build and push multi-arch images with buildx:
+
+```sh
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t "$API_IMAGE" --push ./api
+docker buildx build --platform linux/amd64,linux/arm64 \
+  --build-arg VITE_API_BASE_URL=http://localhost:8080 \
+  -t "$FRONTEND_IMAGE" --push ./frontend
+```
+
+### Run From Docker Hub Images (Remote Pull)
+
+On the target machine, set the same `API_IMAGE` / `FRONTEND_IMAGE` values
+(via `.env` or `export`), then pull and start without building:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+This uses `docker-compose.yml` only, so no build context is required. The
+machine still needs `infra/haproxy/haproxy.cfg` because HAProxy bind-mounts
+it; keep a repo checkout or copy that file alongside the compose file.
+
+Because `VITE_API_BASE_URL` is baked into the frontend image at build time,
+rebuild and republish the frontend image if the browser-facing API URL
+changes.
 
 ## Start Frontend
 
@@ -53,19 +124,19 @@ The frontend defaults to `http://localhost:8080` for API calls. Override it with
 ### Frontend Container Only
 
 ```sh
-docker compose up --build frontend
+docker compose -f docker-compose.yml -f docker-compose.build.yml up --build frontend
 ```
 
 Override the browser-facing frontend port:
 
 ```sh
-FRONTEND_PORT=5173 docker compose up --build frontend
+FRONTEND_PORT=5173 docker compose -f docker-compose.yml -f docker-compose.build.yml up --build frontend
 ```
 
 For container builds, `VITE_API_BASE_URL` is baked into the static frontend bundle:
 
 ```sh
-VITE_API_BASE_URL=http://172.16.0.90:8080 docker compose up --build frontend
+VITE_API_BASE_URL=http://172.16.0.90:8080 docker compose -f docker-compose.yml -f docker-compose.build.yml up --build frontend
 ```
 
 ## Image Upload Load Test

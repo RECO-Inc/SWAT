@@ -1,8 +1,6 @@
 services:
   api-1: &api
-    build:
-      context: ./api
-    image: swat-api:latest
+    image: ${API_IMAGE:-swat-api:latest}
     environment:
       API_ADDR: :8080
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-102400}
@@ -38,11 +36,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
-    image: swat-frontend:latest
+    image: ${FRONTEND_IMAGE:-swat-frontend:latest}
     depends_on:
       - haproxy
     ports:
