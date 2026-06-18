@@ -47,6 +47,11 @@ FRONTEND_PORT=5173 VITE_API_BASE_URL=http://172.16.0.90:8080 docker compose up -
 - Check `/health`.
 - Upload one weighing slip image to `/api/weighing-slip/upload`.
 - Display JSON responses.
+- Load generation in a Web Worker that schedules N logical workers at a target per-worker TPS, with ramp-up and duration.
+  - Test types: image upload, weighing data single, weighing data bulk.
+  - Image source: selected file or a synthetic payload of a configured size.
+  - Live metrics: sent/success/fail, current TPS, success rate, avg/p95/p99/max latency, in-flight, status-code breakdown, and recent errors.
+  - Export CSV/JSON, copy a certification summary, and submit results to `/api/test-result`.
 
 ## Check
 

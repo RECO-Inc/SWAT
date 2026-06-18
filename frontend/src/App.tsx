@@ -1,11 +1,19 @@
-import { type ChangeEvent, type FormEvent, useMemo, useState } from 'react'
+import { type FormEvent, useMemo, useState } from 'react'
 import './App.css'
+import LoadTestPanel from './load/LoadTestPanel'
+import FileUpload from './components/FileUpload'
+import AnalysisView from './analysis/AnalysisView'
+import type { RunRecord } from './load/loadTypes'
+
+const MAX_UPLOAD_BYTES = 100 * 1024
 
 type RequestState = {
   status: 'idle' | 'loading' | 'success' | 'error'
   message: string
   data?: unknown
 }
+
+type View = 'console' | 'analysis'
 
 const defaultApiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
@@ -23,6 +31,12 @@ function App() {
     status: 'idle',
     message: 'No upload yet.',
   })
+  const [view, setView] = useState<View>('console')
+  const [runs, setRuns] = useState<RunRecord[]>([])
+
+  function addRun(run: RunRecord) {
+    setRuns((previous) => [run, ...previous])
+  }
 
   const normalizedApiBaseUrl = useMemo(
     () => apiBaseUrl.replace(/\/+$/, ''),
@@ -100,18 +114,14 @@ function App() {
     }
   }
 
-  function onFileChange(event: ChangeEvent<HTMLInputElement>) {
-    setFile(event.target.files?.[0] ?? null)
-  }
-
   return (
     <main className="app-shell">
       <section className="hero">
         <div className="hero-text">
           <p className="eyebrow">SWAT Web Test Console</p>
-          <h1>계량 API 테스트 콘솔</h1>
+          <h1>계근 API 테스트 콘솔</h1>
           <p className="hero-copy">
-            HAProxy 뒤의 Go API 상태를 확인하고 계량 전표 이미지를 업로드해
+            HAProxy 뒤의 Go API 상태를 확인하고 계근증 이미지를 업로드해
             인증 테스트 흐름을 빠르게 점검합니다.
           </p>
         </div>
@@ -122,6 +132,28 @@ function App() {
         </div>
       </section>
 
+      <div className="view-switch" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'console'}
+          className={`view-tab${view === 'console' ? ' active' : ''}`}
+          onClick={() => setView('console')}
+        >
+          부하 테스트
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'analysis'}
+          className={`view-tab${view === 'analysis' ? ' active' : ''}`}
+          onClick={() => setView('analysis')}
+        >
+          결과 분석 ({runs.length})
+        </button>
+      </div>
+
+      <div className="view" hidden={view !== 'console'}>
       <section className="panel">
         <div className="panel-heading">
           <div>
@@ -149,7 +181,7 @@ function App() {
         <div className="panel-heading">
           <div>
             <p className="section-kicker">Upload</p>
-            <h2>전표 이미지 업로드</h2>
+            <h2>계근증 이미지 업로드</h2>
           </div>
           <span className="file-chip">{file ? formatBytes(file.size) : 'No file selected'}</span>
         </div>
@@ -172,11 +204,15 @@ function App() {
             </label>
           </div>
 
-          <label className="field file-field">
-            <span>Weighing slip image</span>
-            <input accept="image/*" type="file" onChange={onFileChange} />
-            <small>JPG/PNG 파일을 선택하면 업로드 요청에 multipart form으로 첨부됩니다.</small>
-          </label>
+          <FileUpload
+            label="계근증 이미지"
+            file={file}
+            onFileChange={setFile}
+            accept="image/*"
+            hint="JPG/PNG · 최대 100KB 권장 (인증 기준)"
+            maxBytes={MAX_UPLOAD_BYTES}
+            required
+          />
 
           <button type="submit" className="button primary" disabled={upload.status === 'loading'}>
             Upload image
@@ -186,15 +222,17 @@ function App() {
         <StatusCard state={upload} />
       </section>
 
-      <section className="panel muted">
-        <p className="section-kicker">Roadmap</p>
-        <h2>Next steps</h2>
-        <ul>
-          <li>Add Web Worker based load generation.</li>
-          <li>Track live TPS, success count, failures, p95, and p99.</li>
-          <li>Export CSV/JSON certification evidence.</li>
-        </ul>
-      </section>
+      <LoadTestPanel
+        apiBaseUrl={normalizedApiBaseUrl}
+        testRunId={testRunId}
+        deviceId={deviceId}
+        onRunComplete={addRun}
+      />
+      </div>
+
+      <div className="view" hidden={view !== 'analysis'}>
+        <AnalysisView runs={runs} onClear={() => setRuns([])} />
+      </div>
     </main>
   )
 }
