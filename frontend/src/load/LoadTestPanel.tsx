@@ -7,7 +7,7 @@ import type {
   RunRecord,
   WorkerOutbound,
 } from './loadTypes'
-import { emptySnapshot } from './loadTypes'
+import { emptySnapshot, isImageTestType } from './loadTypes'
 import FileUpload from '../components/FileUpload'
 
 type Props = {
@@ -29,7 +29,8 @@ const DEFAULT_TEMPLATE = JSON.stringify(
 )
 
 const TEST_TYPE_LABELS: Record<LoadTestType, string> = {
-  'image-upload': '이미지 업로드',
+  'image-upload': '이미지 업로드 (비동기 OCR)',
+  'image-upload-sync': '이미지 업로드 (동기 OCR)',
   'weighing-data': '계근 데이터 단건',
   'weighing-data-bulk': '계근 데이터 벌크',
 }
@@ -66,7 +67,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
     return `${workerCount * workerTps} TPS`
   }, [workerCount, workerTps])
 
-  const isImage = testType === 'image-upload'
+  const isImage = isImageTestType(testType)
   const isBulk = testType === 'weighing-data-bulk'
 
   async function buildImageBytes(): Promise<{
@@ -317,7 +318,8 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
             onChange={(event) => setTestType(event.target.value as LoadTestType)}
             disabled={running}
           >
-            <option value="image-upload">이미지 업로드</option>
+            <option value="image-upload">이미지 업로드 (비동기 OCR)</option>
+            <option value="image-upload-sync">이미지 업로드 (동기 OCR)</option>
             <option value="weighing-data">계근 데이터 단건</option>
             <option value="weighing-data-bulk">계근 데이터 벌크</option>
           </select>
@@ -443,7 +445,16 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         <div className="progress-fill" style={{ width: `${progressPct}%` }} />
       </div>
 
-      {error ? <div className="status-card error"><strong>{error}</strong></div> : null}
+      {error ? (
+        <div className="status-card error" role="status">
+          <span className="status-card-icon" aria-hidden="true">
+            !
+          </span>
+          <div className="status-card-body">
+            <strong>{error}</strong>
+          </div>
+        </div>
+      ) : null}
 
       <div className="metric-grid">
         <Metric label="전송" value={snapshot.sent} />
@@ -471,8 +482,13 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
 
       {snapshot.errors.length > 0 ? (
         <div className="status-card error">
-          <strong>오류 ({snapshot.errors.length})</strong>
-          <pre>{snapshot.errors.join('\n')}</pre>
+          <span className="status-card-icon" aria-hidden="true">
+            !
+          </span>
+          <div className="status-card-body">
+            <strong>오류 ({snapshot.errors.length})</strong>
+            <pre>{snapshot.errors.join('\n')}</pre>
+          </div>
         </div>
       ) : null}
 

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,8 +21,7 @@ import (
 const (
 	defaultMaxUploadBytes = 100 << 10
 	maxRequestBodySize    = 2 << 20
-	asyncQueueSize        = 4096
-	asyncWorkerCount      = 4
+	auditQueueSize        = 4096
 )
 
 type Server struct {
@@ -35,6 +36,12 @@ type Server struct {
 	metrics    *Metrics
 
 	maxUploadBytes int64
+
+	ocr           *ocrClient
+	ocrMu         sync.RWMutex
+	ocrResults    map[string]*OCRResult
+	ocrOrder      []string
+	maxOCRResults int
 }
 
 type UploadResponse struct {
@@ -104,10 +111,88 @@ type TestRequestIDs struct {
 type UploadJob struct {
 	UploadID  string
 	FileName  string
+	Data      []byte
 	SizeBytes int64
 	Trace     TestRequestIDs
 	QueuedAt  time.Time
 }
+
+// OCRResult tracks the outcome of forwarding one upload to the OCR service.
+type OCRResult struct {
+	UploadID      string          `json:"uploadId"`
+	FileName      string          `json:"fileName"`
+	SizeBytes     int64           `json:"sizeBytes"`
+	Mode          string          `json:"mode"`
+	Status        string          `json:"status"`
+	OCRStatusCode int             `json:"ocrStatusCode,omitempty"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	Trace         TestRequestIDs  `json:"trace"`
+	QueuedAt      time.Time       `json:"queuedAt"`
+	StartedAt     *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt    *time.Time      `json:"finishedAt,omitempty"`
+	LatencyMs     float64         `json:"latencyMs,omitempty"`
+}
+
+// SyncUploadResponse is returned by the synchronous OCR upload endpoint.
+type SyncUploadResponse struct {
+	UploadID      string          `json:"uploadId"`
+	FileName      string          `json:"fileName"`
+	SizeBytes     int64           `json:"sizeBytes"`
+	Status        string          `json:"status"`
+	OCRStatusCode int             `json:"ocrStatusCode"`
+	LatencyMs     float64         `json:"latencyMs"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	Trace         TestRequestIDs  `json:"trace"`
+}
+
+// OCRStatusItem is a lightweight view of an OCRResult for the live status list
+// (it omits the full OCR result body to keep the payload small).
+type OCRStatusItem struct {
+	UploadID      string          `json:"uploadId"`
+	FileName      string          `json:"fileName"`
+	SizeBytes     int64           `json:"sizeBytes"`
+	Mode          string          `json:"mode"`
+	Status        string          `json:"status"`
+	OCRStatusCode int             `json:"ocrStatusCode,omitempty"`
+	LatencyMs     float64         `json:"latencyMs,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	QueuedAt      time.Time       `json:"queuedAt"`
+	StartedAt     *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt    *time.Time      `json:"finishedAt,omitempty"`
+}
+
+// OCRStatusSummary aggregates the live OCR pipeline counters.
+type OCRStatusSummary struct {
+	Enabled       bool   `json:"enabled"`
+	QueueDepth    int    `json:"queueDepth"`
+	QueueCapacity int    `json:"queueCapacity"`
+	Pending       int64  `json:"pending"`
+	Enqueued      int64  `json:"enqueued"`
+	Dropped       int64  `json:"dropped"`
+	Success       int64  `json:"success"`
+	Error         int64  `json:"error"`
+	Stored        int    `json:"stored"`
+	GeneratedAt   string `json:"generatedAt"`
+}
+
+// OCRStatusResponse is the payload for GET /api/weighing-slip/ocr-status.
+type OCRStatusResponse struct {
+	Summary OCRStatusSummary `json:"summary"`
+	Items   []OCRStatusItem  `json:"items"`
+}
+
+const (
+	ocrStatusPending  = "pending"
+	ocrStatusDone     = "done"
+	ocrStatusError    = "error"
+	ocrStatusDropped  = "dropped"
+	ocrStatusDisabled = "disabled"
+
+	ocrModeAsync = "async"
+	ocrModeSync  = "sync"
+)
 
 type AuditJob struct {
 	Endpoint   string
@@ -126,6 +211,12 @@ type Metrics struct {
 	testResultsTotal  atomic.Int64
 	asyncDroppedTotal atomic.Int64
 
+	ocrEnqueuedTotal atomic.Int64
+	ocrDroppedTotal  atomic.Int64
+	ocrSuccessTotal  atomic.Int64
+	ocrErrorTotal    atomic.Int64
+	ocrPending       atomic.Int64
+
 	inFlight atomic.Int64
 }
 
@@ -136,10 +227,13 @@ type errorResponse struct {
 func NewServer() *Server {
 	server := &Server{
 		mux:            http.NewServeMux(),
-		uploadJobs:     make(chan UploadJob, asyncQueueSize),
-		auditJobs:      make(chan AuditJob, asyncQueueSize),
+		uploadJobs:     make(chan UploadJob, envInt("OCR_ASYNC_QUEUE", defaultOCRAsyncQueue)),
+		auditJobs:      make(chan AuditJob, auditQueueSize),
 		metrics:        &Metrics{},
 		maxUploadBytes: maxUploadBytesFromEnv(),
+		ocr:            newOCRClient(),
+		ocrResults:     make(map[string]*OCRResult),
+		maxOCRResults:  envInt("OCR_MAX_RESULTS", defaultOCRMaxResults),
 		weighings: []WeighingRecord{
 			{
 				ID:            "wgt_sample_001",
@@ -168,6 +262,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /metrics", s.metricsText)
 	s.mux.HandleFunc("POST /api/weighing-slip/upload", s.uploadWeighingSlip)
+	s.mux.HandleFunc("POST /api/weighing-slip/upload-sync", s.uploadWeighingSlipSync)
+	s.mux.HandleFunc("GET /api/weighing-slip/ocr-status", s.ocrStatus)
+	s.mux.HandleFunc("GET /api/weighing-slip/ocr-result/{uploadId}", s.getOCRResult)
 	s.mux.HandleFunc("POST /api/weighing-data", s.createWeighing)
 	s.mux.HandleFunc("POST /api/weighing-data/bulk", s.createBulkWeighing)
 	s.mux.HandleFunc("POST /api/test-result", s.createTestResult)
@@ -185,14 +282,22 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"workerModel":      "100 logical workers x 1 TPS",
 		"maxUploadBytes":   s.maxUploadBytes,
 		"uploadQueueDepth": len(s.uploadJobs),
+		"ocrEnabled":       s.ocr.enabled,
+		"ocrPending":       s.metrics.ocrPending.Load(),
+		"ocrSuccess":       s.metrics.ocrSuccessTotal.Load(),
+		"ocrError":         s.metrics.ocrErrorTotal.Load(),
+		"ocrDropped":       s.metrics.ocrDroppedTotal.Load(),
 	})
 }
 
+// uploadWeighingSlip accepts the image, responds immediately, and forwards the
+// file to the OCR service in the background. The OCR outcome is retrievable via
+// GET /api/weighing-slip/ocr-result/{uploadId}.
 func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 	trace := testRequestIDs(r)
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadBytes+4096)
 
-	fileName, sizeBytes, err := readMultipartFile(r, "file", s.maxUploadBytes)
+	fileName, data, sizeBytes, err := readMultipartFileBytes(r, "file", s.maxUploadBytes)
 	if err != nil {
 		s.metrics.uploadRejected.Add(1)
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -205,20 +310,44 @@ func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := UploadJob{
+	now := time.Now().UTC()
+	result := &OCRResult{
 		UploadID:  uploadID,
 		FileName:  fileName,
 		SizeBytes: sizeBytes,
+		Mode:      ocrModeAsync,
+		Status:    ocrStatusPending,
 		Trace:     trace,
-		QueuedAt:  time.Now().UTC(),
-	}
-	if !s.enqueueUpload(job) {
-		writeError(w, http.StatusServiceUnavailable, "upload queue is full")
-		return
+		QueuedAt:  now,
 	}
 
 	s.metrics.uploadAccepted.Add(1)
 	s.metrics.uploadBytesTotal.Add(sizeBytes)
+
+	if !s.ocr.enabled {
+		result.Status = ocrStatusDisabled
+		s.putOCRResult(result)
+	} else {
+		s.putOCRResult(result)
+		job := UploadJob{
+			UploadID:  uploadID,
+			FileName:  fileName,
+			Data:      data,
+			SizeBytes: sizeBytes,
+			Trace:     trace,
+			QueuedAt:  now,
+		}
+		if s.enqueueUpload(job) {
+			s.metrics.ocrEnqueuedTotal.Add(1)
+			s.metrics.ocrPending.Add(1)
+		} else {
+			s.metrics.ocrDroppedTotal.Add(1)
+			s.markOCRResult(uploadID, func(res *OCRResult) {
+				res.Status = ocrStatusDropped
+				res.Error = "ocr queue is full"
+			})
+		}
+	}
 
 	writeJSON(w, http.StatusAccepted, UploadResponse{
 		UploadID:  uploadID,
@@ -226,6 +355,142 @@ func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 		SizeBytes: sizeBytes,
 		Status:    "accepted",
 		Trace:     trace,
+	})
+}
+
+// uploadWeighingSlipSync accepts the image, runs OCR inline, and only responds
+// once the OCR service has returned a result.
+func (s *Server) uploadWeighingSlipSync(w http.ResponseWriter, r *http.Request) {
+	trace := testRequestIDs(r)
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadBytes+4096)
+
+	fileName, data, sizeBytes, err := readMultipartFileBytes(r, "file", s.maxUploadBytes)
+	if err != nil {
+		s.metrics.uploadRejected.Add(1)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	uploadID, err := prefixedID("upl")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create upload id")
+		return
+	}
+
+	s.metrics.uploadAccepted.Add(1)
+	s.metrics.uploadBytesTotal.Add(sizeBytes)
+
+	if !s.ocr.enabled {
+		writeError(w, http.StatusServiceUnavailable, "ocr service is not configured")
+		return
+	}
+
+	ctx, cancel := s.ocr.callCtx(r.Context())
+	defer cancel()
+
+	start := time.Now()
+	statusCode, raw, callErr := s.ocr.call(ctx, fileName, data)
+	latencyMs := float64(time.Since(start).Microseconds()) / 1000
+
+	if callErr != nil {
+		s.metrics.ocrErrorTotal.Add(1)
+		writeError(w, http.StatusBadGateway, "ocr request failed: "+callErr.Error())
+		return
+	}
+	if statusCode >= http.StatusBadRequest {
+		s.metrics.ocrErrorTotal.Add(1)
+		writeJSON(w, http.StatusBadGateway, SyncUploadResponse{
+			UploadID:      uploadID,
+			FileName:      fileName,
+			SizeBytes:     sizeBytes,
+			Status:        ocrStatusError,
+			OCRStatusCode: statusCode,
+			LatencyMs:     latencyMs,
+			Result:        raw,
+			Trace:         trace,
+		})
+		return
+	}
+
+	s.metrics.ocrSuccessTotal.Add(1)
+	writeJSON(w, http.StatusOK, SyncUploadResponse{
+		UploadID:      uploadID,
+		FileName:      fileName,
+		SizeBytes:     sizeBytes,
+		Status:        ocrStatusDone,
+		OCRStatusCode: statusCode,
+		LatencyMs:     latencyMs,
+		Result:        raw,
+		Trace:         trace,
+	})
+}
+
+func (s *Server) getOCRResult(w http.ResponseWriter, r *http.Request) {
+	uploadID := r.PathValue("uploadId")
+
+	s.ocrMu.RLock()
+	result, ok := s.ocrResults[uploadID]
+	s.ocrMu.RUnlock()
+
+	if !ok {
+		writeError(w, http.StatusNotFound, "ocr result not found for upload id")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ocrStatus returns the live OCR pipeline summary plus the most recent results.
+// Query params: limit (default 50, max 500), status (optional filter).
+func (s *Server) ocrStatus(w http.ResponseWriter, r *http.Request) {
+	const maxScan = 5000
+	limit := clampInt(parseQueryInt(r.URL.Query().Get("limit"), 50), 1, 500)
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+
+	s.ocrMu.RLock()
+	items := make([]OCRStatusItem, 0, limit)
+	scanned := 0
+	for i := len(s.ocrOrder) - 1; i >= 0 && len(items) < limit && scanned < maxScan; i-- {
+		result, ok := s.ocrResults[s.ocrOrder[i]]
+		if !ok {
+			continue
+		}
+		scanned++
+		if statusFilter != "" && result.Status != statusFilter {
+			continue
+		}
+		items = append(items, OCRStatusItem{
+			UploadID:      result.UploadID,
+			FileName:      result.FileName,
+			SizeBytes:     result.SizeBytes,
+			Mode:          result.Mode,
+			Status:        result.Status,
+			OCRStatusCode: result.OCRStatusCode,
+			LatencyMs:     result.LatencyMs,
+			Error:         result.Error,
+			Result:        result.Result,
+			QueuedAt:      result.QueuedAt,
+			StartedAt:     result.StartedAt,
+			FinishedAt:    result.FinishedAt,
+		})
+	}
+	stored := len(s.ocrResults)
+	s.ocrMu.RUnlock()
+
+	writeJSON(w, http.StatusOK, OCRStatusResponse{
+		Summary: OCRStatusSummary{
+			Enabled:       s.ocr.enabled,
+			QueueDepth:    len(s.uploadJobs),
+			QueueCapacity: cap(s.uploadJobs),
+			Pending:       s.metrics.ocrPending.Load(),
+			Enqueued:      s.metrics.ocrEnqueuedTotal.Load(),
+			Dropped:       s.metrics.ocrDroppedTotal.Load(),
+			Success:       s.metrics.ocrSuccessTotal.Load(),
+			Error:         s.metrics.ocrErrorTotal.Load(),
+			Stored:        stored,
+			GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		Items: items,
 	})
 }
 
@@ -371,6 +636,21 @@ func (s *Server) metricsText(w http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(w, "# HELP swat_async_dropped_total Async jobs dropped because queues were full.\n")
 	_, _ = fmt.Fprintf(w, "# TYPE swat_async_dropped_total counter\n")
 	_, _ = fmt.Fprintf(w, "swat_async_dropped_total %d\n", s.metrics.asyncDroppedTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_enqueued_total Uploads queued for asynchronous OCR.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_enqueued_total counter\n")
+	_, _ = fmt.Fprintf(w, "swat_ocr_enqueued_total %d\n", s.metrics.ocrEnqueuedTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_dropped_total Async OCR jobs dropped because the OCR queue was full.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_dropped_total counter\n")
+	_, _ = fmt.Fprintf(w, "swat_ocr_dropped_total %d\n", s.metrics.ocrDroppedTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_success_total OCR requests that returned a 2xx/3xx result.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_success_total counter\n")
+	_, _ = fmt.Fprintf(w, "swat_ocr_success_total %d\n", s.metrics.ocrSuccessTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_error_total OCR requests that failed or returned a 4xx/5xx result.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_error_total counter\n")
+	_, _ = fmt.Fprintf(w, "swat_ocr_error_total %d\n", s.metrics.ocrErrorTotal.Load())
+	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_pending Async OCR jobs currently queued or in flight.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_pending gauge\n")
+	_, _ = fmt.Fprintf(w, "swat_ocr_pending %d\n", s.metrics.ocrPending.Load())
 }
 
 func newWeighingRecord(req CreateWeighingRequest) (WeighingRecord, error) {
@@ -423,19 +703,22 @@ func copyMax(dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
 	return written, nil
 }
 
-func readMultipartFile(r *http.Request, fieldName string, maxBytes int64) (string, int64, error) {
+// readMultipartFileBytes streams the named multipart file into memory, enforcing
+// the configured size limit. Files are <= 100 KB for this testbed, so buffering
+// the bytes to forward them to OCR is cheap.
+func readMultipartFileBytes(r *http.Request, fieldName string, maxBytes int64) (string, []byte, int64, error) {
 	reader, err := r.MultipartReader()
 	if err != nil {
-		return "", 0, errors.New("request must be multipart/form-data")
+		return "", nil, 0, errors.New("request must be multipart/form-data")
 	}
 
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
-			return "", 0, fmt.Errorf("multipart field %s is required", fieldName)
+			return "", nil, 0, fmt.Errorf("multipart field %s is required", fieldName)
 		}
 		if err != nil {
-			return "", 0, errors.New("failed to read multipart body")
+			return "", nil, 0, errors.New("failed to read multipart body")
 		}
 
 		if part.FormName() != fieldName {
@@ -444,14 +727,37 @@ func readMultipartFile(r *http.Request, fieldName string, maxBytes int64) (strin
 		}
 
 		fileName := part.FileName()
-		sizeBytes, err := copyMax(io.Discard, part, maxBytes)
+		var buf bytes.Buffer
+		sizeBytes, err := copyMax(&buf, part, maxBytes)
 		_ = part.Close()
 		if err != nil {
-			return "", 0, err
+			return "", nil, 0, err
 		}
 
-		return fileName, sizeBytes, nil
+		return fileName, buf.Bytes(), sizeBytes, nil
 	}
+}
+
+func parseQueryInt(value string, fallback int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func clampInt(value, low, high int) int {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }
 
 func maxUploadBytesFromEnv() int64 {
@@ -513,10 +819,11 @@ func (s *Server) enqueueAudit(job AuditJob) {
 }
 
 func (s *Server) startAsyncWorkers() {
-	for range asyncWorkerCount {
+	workerCount := envInt("OCR_ASYNC_WORKERS", defaultOCRAsyncWorkers)
+	for range workerCount {
 		go func() {
-			for range s.uploadJobs {
-				// MVP 1: the worker represents async metadata/storage work.
+			for job := range s.uploadJobs {
+				s.processOCRJob(job)
 			}
 		}()
 	}
@@ -526,6 +833,78 @@ func (s *Server) startAsyncWorkers() {
 			// MVP 1: the worker keeps request-path logging off the hot path.
 		}
 	}()
+}
+
+// processOCRJob forwards a queued upload to the OCR service and records the outcome.
+func (s *Server) processOCRJob(job UploadJob) {
+	defer s.metrics.ocrPending.Add(-1)
+
+	start := time.Now()
+	s.markOCRResult(job.UploadID, func(res *OCRResult) {
+		started := start.UTC()
+		res.StartedAt = &started
+	})
+
+	ctx, cancel := s.ocr.callCtx(context.Background())
+	statusCode, raw, err := s.ocr.call(ctx, job.FileName, job.Data)
+	cancel()
+
+	finished := time.Now()
+	latencyMs := float64(finished.Sub(start).Microseconds()) / 1000
+	finishedUTC := finished.UTC()
+
+	switch {
+	case err != nil:
+		s.metrics.ocrErrorTotal.Add(1)
+		s.markOCRResult(job.UploadID, func(res *OCRResult) {
+			res.Status = ocrStatusError
+			res.Error = err.Error()
+			res.FinishedAt = &finishedUTC
+			res.LatencyMs = latencyMs
+		})
+	case statusCode >= http.StatusBadRequest:
+		s.metrics.ocrErrorTotal.Add(1)
+		s.markOCRResult(job.UploadID, func(res *OCRResult) {
+			res.Status = ocrStatusError
+			res.OCRStatusCode = statusCode
+			res.Result = raw
+			res.FinishedAt = &finishedUTC
+			res.LatencyMs = latencyMs
+		})
+	default:
+		s.metrics.ocrSuccessTotal.Add(1)
+		s.markOCRResult(job.UploadID, func(res *OCRResult) {
+			res.Status = ocrStatusDone
+			res.OCRStatusCode = statusCode
+			res.Result = raw
+			res.FinishedAt = &finishedUTC
+			res.LatencyMs = latencyMs
+		})
+	}
+}
+
+func (s *Server) putOCRResult(result *OCRResult) {
+	s.ocrMu.Lock()
+	defer s.ocrMu.Unlock()
+
+	// Bound memory: drop everything once it grows past the configured cap.
+	// Certification runs are restarted between scenarios, so a hard reset is fine.
+	if s.maxOCRResults > 0 && len(s.ocrResults) >= s.maxOCRResults {
+		s.ocrResults = make(map[string]*OCRResult)
+		s.ocrOrder = s.ocrOrder[:0]
+	}
+
+	s.ocrResults[result.UploadID] = result
+	s.ocrOrder = append(s.ocrOrder, result.UploadID)
+}
+
+func (s *Server) markOCRResult(uploadID string, mutate func(*OCRResult)) {
+	s.ocrMu.Lock()
+	defer s.ocrMu.Unlock()
+
+	if result, ok := s.ocrResults[uploadID]; ok {
+		mutate(result)
+	}
 }
 
 func withCORS(next http.Handler) http.Handler {

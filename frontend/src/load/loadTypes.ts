@@ -1,7 +1,12 @@
 export type LoadTestType =
   | 'image-upload'
+  | 'image-upload-sync'
   | 'weighing-data'
   | 'weighing-data-bulk'
+
+export function isImageTestType(testType: LoadTestType): boolean {
+  return testType === 'image-upload' || testType === 'image-upload-sync'
+}
 
 export interface LoadConfig {
   apiBaseUrl: string

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestHealth(t *testing.T) {
@@ -263,6 +264,188 @@ func TestCreateTestResult(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
+}
+
+func TestAsyncUploadWithoutOCRMarksDisabled(t *testing.T) {
+	handler := NewServer().Handler()
+
+	req := newMultipartUploadRequest(t, "/api/weighing-slip/upload", "certificate.jpg", []byte("fake image bytes"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	var response UploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+
+	result := fetchOCRResult(t, handler, response.UploadID)
+	if result.Status != ocrStatusDisabled {
+		t.Fatalf("expected ocr status %q, got %q", ocrStatusDisabled, result.Status)
+	}
+}
+
+func TestSyncUploadRunsOCR(t *testing.T) {
+	ocr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ocr stub parse: %v", err)
+		}
+		if _, _, err := r.FormFile("file"); err != nil {
+			t.Errorf("ocr stub missing file: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"parsed":{"ocr_amount":"2520"}}`))
+	}))
+	defer ocr.Close()
+
+	t.Setenv("OCR_API_URL", ocr.URL)
+	handler := NewServer().Handler()
+
+	req := newMultipartUploadRequest(t, "/api/weighing-slip/upload-sync", "certificate.jpg", []byte("fake image bytes"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response SyncUploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != ocrStatusDone {
+		t.Fatalf("expected status %q, got %q", ocrStatusDone, response.Status)
+	}
+	if response.OCRStatusCode != http.StatusOK {
+		t.Fatalf("expected ocr status code 200, got %d", response.OCRStatusCode)
+	}
+	if !strings.Contains(string(response.Result), "2520") {
+		t.Fatalf("expected ocr result body, got %s", string(response.Result))
+	}
+}
+
+func TestAsyncUploadRunsOCRInBackground(t *testing.T) {
+	ocr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"parsed":{"ocr_amount":"2520"}}`))
+	}))
+	defer ocr.Close()
+
+	t.Setenv("OCR_API_URL", ocr.URL)
+	handler := NewServer().Handler()
+
+	req := newMultipartUploadRequest(t, "/api/weighing-slip/upload", "certificate.jpg", []byte("fake image bytes"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	var response UploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		result := fetchOCRResult(t, handler, response.UploadID)
+		if result.Status == ocrStatusDone {
+			if !strings.Contains(string(result.Result), "2520") {
+				t.Fatalf("expected ocr result body, got %s", string(result.Result))
+			}
+			return
+		}
+		if result.Status == ocrStatusError {
+			t.Fatalf("async ocr failed: %s", result.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("async ocr did not finish, last status %q", result.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestOCRStatusEndpoint(t *testing.T) {
+	ocr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"parsed":{"ocr_amount":"2520"}}`))
+	}))
+	defer ocr.Close()
+
+	t.Setenv("OCR_API_URL", ocr.URL)
+	handler := NewServer().Handler()
+
+	req := newMultipartUploadRequest(t, "/api/weighing-slip/upload", "certificate.jpg", []byte("fake image bytes"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var response UploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		result := fetchOCRResult(t, handler, response.UploadID)
+		if result.Status == ocrStatusDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("async ocr did not finish, last status %q", result.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/weighing-slip/ocr-status?limit=10", nil)
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, statusRec.Code, statusRec.Body.String())
+	}
+
+	var status OCRStatusResponse
+	if err := json.NewDecoder(statusRec.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+
+	if !status.Summary.Enabled {
+		t.Fatal("expected ocr to be enabled")
+	}
+	if status.Summary.Success < 1 {
+		t.Fatalf("expected at least one success, got %d", status.Summary.Success)
+	}
+	if len(status.Items) == 0 {
+		t.Fatal("expected at least one status item")
+	}
+	if status.Items[0].UploadID != response.UploadID {
+		t.Fatalf("expected most recent item %q, got %q", response.UploadID, status.Items[0].UploadID)
+	}
+	if status.Items[0].Status != ocrStatusDone {
+		t.Fatalf("expected item status done, got %q", status.Items[0].Status)
+	}
+}
+
+func fetchOCRResult(t *testing.T, handler http.Handler, uploadID string) OCRResult {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/weighing-slip/ocr-result/"+uploadID, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d for ocr-result, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var result OCRResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func newMultipartUploadRequest(t *testing.T, path string, fileName string, content []byte) *http.Request {

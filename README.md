@@ -44,6 +44,21 @@ curl -i http://localhost:8080/health
 
 HAProxy stats are available at `http://localhost:8404`.
 
+### OCR Modes
+
+The weighing-slip upload path can forward images to an external OCR service in two
+selectable modes, so each can be load-tested and certified separately:
+
+- Async: `POST /api/weighing-slip/upload` responds immediately, OCR runs in the
+  background. Poll `GET /api/weighing-slip/ocr-result/{uploadId}` for the result.
+- Sync: `POST /api/weighing-slip/upload-sync` runs OCR inline and returns the
+  parsed result and latency in the response.
+
+Enable OCR by setting `OCR_API_URL` (in `.env` or the environment); leaving it empty
+disables OCR forwarding. See `api/README.md` for the full list of `OCR_*` settings.
+The frontend single-upload panel has an OCR-mode toggle, and the load test panel adds
+"이미지 업로드 (비동기 OCR)" and "이미지 업로드 (동기 OCR)" test types.
+
 ### Makefile Shortcuts
 
 A `Makefile` wraps the common Docker workflows. It auto-loads `.env`, so set

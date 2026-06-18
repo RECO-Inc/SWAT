@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"time"
 
 	"swat-api/internal/httpapi"
@@ -22,11 +24,13 @@ func main() {
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           httpapi.NewServer().Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       durationFromEnvMs("API_READ_TIMEOUT_MS", 60*time.Second),
+		// WriteTimeout defaults to 0 (disabled) so synchronous OCR uploads can wait
+		// for a slow OCR service without the connection being reset mid-request.
+		WriteTimeout:   durationFromEnvMs("API_WRITE_TIMEOUT_MS", 0),
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -51,4 +55,18 @@ func main() {
 	}
 
 	logger.Info("api server stopped")
+}
+
+// durationFromEnvMs reads a millisecond value from the environment. An unset or
+// invalid value uses the fallback; an explicit 0 disables the timeout.
+func durationFromEnvMs(name string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return time.Duration(parsed) * time.Millisecond
 }

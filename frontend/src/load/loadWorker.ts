@@ -1,3 +1,4 @@
+import { isImageTestType } from './loadTypes'
 import type {
   LoadConfig,
   LoadSnapshot,
@@ -128,12 +129,16 @@ function buildRequest(
     headers.Authorization = config.authToken.trim()
   }
 
-  if (config.testType === 'image-upload') {
+  if (isImageTestType(config.testType)) {
     const formData = new FormData()
     const blob = imageBlob ?? new Blob([new Uint8Array(0)], { type: 'image/jpeg' })
     formData.append('file', blob, config.imageName ?? 'weighing-slip.jpg')
+    const path =
+      config.testType === 'image-upload-sync'
+        ? '/api/weighing-slip/upload-sync'
+        : '/api/weighing-slip/upload'
     return {
-      url: `${config.apiBaseUrl}/api/weighing-slip/upload`,
+      url: `${config.apiBaseUrl}${path}`,
       init: { method: 'POST', headers, body: formData },
     }
   }
@@ -230,7 +235,7 @@ async function startLoad(config: LoadConfig): Promise<void> {
   if (running) return
 
   let parsedTemplate: unknown
-  if (config.testType !== 'image-upload') {
+  if (!isImageTestType(config.testType)) {
     try {
       parsedTemplate = JSON.parse(config.jsonTemplate ?? '{}')
     } catch {
@@ -240,7 +245,7 @@ async function startLoad(config: LoadConfig): Promise<void> {
   }
 
   let imageBlob: Blob | undefined
-  if (config.testType === 'image-upload' && config.imageBytes) {
+  if (isImageTestType(config.testType) && config.imageBytes) {
     imageBlob = new Blob([config.imageBytes], {
       type: config.imageContentType ?? 'image/jpeg',
     })

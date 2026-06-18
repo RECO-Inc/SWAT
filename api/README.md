@@ -91,7 +91,7 @@ curl http://localhost:8080/metrics
 
 The metrics response is Prometheus text format and includes request, upload, weighing-row, in-flight, and async queue counters.
 
-### Upload Weighing Slip Image
+### Upload Weighing Slip Image (Async OCR)
 
 ```sh
 curl -X POST http://localhost:8080/api/weighing-slip/upload \
@@ -103,9 +103,58 @@ curl -X POST http://localhost:8080/api/weighing-slip/upload \
   -F "file=@./sample-certificate.jpg"
 ```
 
-The file should be a 100 KB-or-less weighing slip image for certification-style tests. This endpoint reads the multipart file and queues metadata work, but does not store the file yet.
+The file should be a 100 KB-or-less weighing slip image for certification-style tests. This endpoint reads the multipart file, responds immediately with an `uploadId` (HTTP 202), and forwards the image to the OCR service on a background worker pool. Fetch the OCR outcome later:
+
+```sh
+curl http://localhost:8080/api/weighing-slip/ocr-result/<uploadId>
+```
+
+The result `status` is one of `pending`, `done`, `error`, `dropped` (OCR queue full), or `disabled` (`OCR_API_URL` not set).
+
+### OCR Live Status
+
+```sh
+curl "http://localhost:8080/api/weighing-slip/ocr-status?limit=50&status=pending"
+```
+
+Returns a `summary` (queue depth/capacity, pending, enqueued, dropped, success, error, stored) plus the most recent `items` (newest first), each with its per-request status, latency, and error. `status` is an optional filter (`pending`/`done`/`error`/`dropped`/`disabled`); `limit` defaults to 50 (max 500). The frontend "OCR 현황" menu polls this endpoint for live monitoring.
 
 The default upload limit is `102400` bytes. Set `MAX_UPLOAD_BYTES` when you need to test larger samples.
+
+### Upload Weighing Slip Image (Sync OCR)
+
+```sh
+curl -X POST http://localhost:8080/api/weighing-slip/upload-sync \
+  -H "X-Test-Run-Id: CERT-20260617-001" \
+  -F "file=@./sample-certificate.jpg"
+```
+
+This endpoint runs OCR inline and responds (HTTP 200) only after the OCR service returns, including the parsed OCR `result` and `latencyMs`. If `OCR_API_URL` is not configured it returns HTTP 503.
+
+Note: sync mode is bound by the OCR service throughput. If the OCR backend processes requests serially (one at a time), high-concurrency sync load will queue for a long time. Use sync for single/low-concurrency latency checks, and use the async endpoint for high-TPS load tests.
+
+### OCR Configuration
+
+OCR forwarding is controlled by environment variables (all optional). Leave `OCR_API_URL` empty to disable OCR.
+
+```text
+OCR_API_URL          OCR base URL, e.g. http://192.168.0.9:8718 (empty = disabled)
+OCR_API_PATH         OCR endpoint path, default /ocr
+OCR_MAP              value of the ?map= query param, default true
+OCR_TIMEOUT_MS       per-call OCR timeout in ms; 0 = unlimited (default 30000 if unset)
+OCR_ASYNC_WORKERS    background OCR worker count, default 16
+OCR_ASYNC_QUEUE      async OCR queue capacity, default 1024
+API_WRITE_TIMEOUT_MS HTTP write timeout in ms; 0 = disabled (default), so slow
+                     synchronous OCR is not reset mid-request
+```
+
+For fully decoupled async behavior set `OCR_TIMEOUT_MS=0` (the provided `.env`
+does this): the upload returns `202` immediately and the queued OCR job runs to
+completion no matter how slow the OCR service is. When the OCR backend cannot keep
+up at the incoming rate, the async queue fills and excess jobs are counted as
+`dropped` (the upload still returns `202`; no client error).
+
+OCR counters are exposed in `/metrics` (`swat_ocr_enqueued_total`, `swat_ocr_dropped_total`, `swat_ocr_success_total`, `swat_ocr_error_total`, `swat_ocr_pending`) and summarized in `/health`.
 
 ### Create Weighing Data
 

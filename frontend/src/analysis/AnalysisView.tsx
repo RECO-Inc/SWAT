@@ -8,7 +8,8 @@ type Props = {
 }
 
 const TEST_TYPE_LABELS: Record<string, string> = {
-  'image-upload': '이미지 업로드',
+  'image-upload': '이미지 업로드 (비동기 OCR)',
+  'image-upload-sync': '이미지 업로드 (동기 OCR)',
   'weighing-data': '계근 데이터 단건',
   'weighing-data-bulk': '계근 데이터 벌크',
 }
@@ -41,10 +42,15 @@ function AnalysisView({ runs, onClear }: Props) {
           </div>
         </div>
         <div className="status-card">
-          <strong>아직 분석할 테스트 결과가 없습니다.</strong>
-          <span className="hint">
-            부하 테스트를 한 번 실행하면 시계열 그래프와 통계가 여기에 표시됩니다.
+          <span className="status-card-icon" aria-hidden="true">
+            i
           </span>
+          <div className="status-card-body">
+            <strong>아직 분석할 테스트 결과가 없습니다.</strong>
+            <span className="hint">
+              부하 테스트를 한 번 실행하면 시계열 그래프와 통계가 여기에 표시됩니다.
+            </span>
+          </div>
         </div>
       </section>
     )

@@ -58,7 +58,10 @@ Keep services independently runnable, but manage source, local setup, and docs f
 
 Keep endpoint naming consistent with the certification scenarios.
 
-- `POST /api/weighing-slip/upload`: multipart upload for 100 KB-or-less weighing slip images.
+- `POST /api/weighing-slip/upload`: multipart upload for 100 KB-or-less weighing slip images. Async OCR mode: responds immediately, forwards the image to the OCR service in the background.
+- `POST /api/weighing-slip/upload-sync`: same multipart upload, but runs OCR inline and only responds after the OCR result is returned.
+- `GET /api/weighing-slip/ocr-result/{uploadId}`: fetch the async OCR outcome (pending/done/error/dropped/disabled) for a prior upload.
+- `GET /api/weighing-slip/ocr-status`: live OCR pipeline summary plus recent per-request items (supports `limit` and `status` filter); used by the frontend "OCR 현황" monitor.
 - `POST /api/weighing-data`: single weighing data JSON request.
 - `POST /api/weighing-data/bulk`: bulk weighing data request; track API TPS and row throughput separately.
 - `GET /health`: health check.
@@ -72,6 +75,27 @@ Every test request should include traceable identifiers:
 - `X-Test-Device-Id`: device or browser instance ID.
 - `X-Test-Worker-Id`: logical worker ID.
 - `X-Test-Request-Seq`: per-worker request sequence.
+
+## OCR Integration
+
+The upload path forwards weighing slip images to an external OCR service (`POST {OCR_API_URL}/ocr`, multipart field `file`, optional `?map=`). Two modes are intentionally exposed so each can be certified separately:
+
+- Async (`/api/weighing-slip/upload`): accept fast, return `uploadId`, run OCR on a bounded background worker pool, store the result. This keeps the measured upload TPS decoupled from OCR throughput, matching the "do not run OCR synchronously in the upload request path" rule. Inspect each result via `GET /api/weighing-slip/ocr-result/{uploadId}`.
+- Sync (`/api/weighing-slip/upload-sync`): accept, run OCR inline, respond only after OCR returns. This is for measuring full end-to-end upload+OCR latency and OCR-bound TPS.
+
+Configuration is via environment variables, all optional. If `OCR_API_URL` is empty, OCR forwarding is disabled (async marks results `disabled`, sync returns 503):
+
+- `OCR_API_URL`: OCR service base URL (e.g. `http://192.168.0.9:8718`). Empty disables OCR.
+- `OCR_API_PATH`: OCR endpoint path, default `/ocr`.
+- `OCR_MAP`: value of the `map` query param, default `true`.
+- `OCR_TIMEOUT_MS`: per-call OCR timeout; `0` = unlimited so queued async jobs run to completion. `.env` ships `0`.
+- `OCR_ASYNC_WORKERS`: background OCR worker count, default `16`.
+- `OCR_ASYNC_QUEUE`: async OCR queue capacity; overflow is dropped and counted, default `1024`.
+- `API_WRITE_TIMEOUT_MS`: HTTP write timeout; `0` = disabled (default) so slow synchronous OCR is not reset mid-request.
+
+OCR outcomes surface in `/health` and `/metrics` (`swat_ocr_*`): enqueued, dropped, success, error, and pending gauge.
+
+The OCR backend processes inference serially, so it is the throughput bottleneck (well under 100 TPS). Load-test the upload path with the async endpoint (accept TPS is decoupled from OCR). Use sync only for single/low-concurrency end-to-end latency checks; high-concurrency sync load queues behind the OCR service.
 
 ## Web Test Console
 
