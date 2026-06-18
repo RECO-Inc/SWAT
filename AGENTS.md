@@ -95,6 +95,50 @@ Required live results:
 
 Run request generation inside one Web Worker that schedules N logical workers. Do not create 100 actual browser Web Workers unless there is evidence it is needed.
 
+## Frontend UDS Design System
+
+Implement frontend screens so they follow UDS before adding project-specific visual decisions.
+
+Primary UDS references:
+
+- Figma: `https://www.figma.com/design/4eyRu4lbq9068LACdI8HMp/-%EC%B5%9C%EC%A2%85-Component-_v02?m=auto&t=38OJKlizbiRSJ5UZ-6`
+- Confluence: use the Upbox MCP Confluence tools to search and read UDS design-system pages when a page URL or title is available.
+
+When implementing or changing frontend UI:
+
+1. Check the relevant UDS Confluence page first when the user provides a page URL/title, or search Confluence for the UDS component/guideline name when the source is not explicit.
+2. Check the relevant Figma component or page through the Figma MCP before coding. Use metadata only for navigation; use design context, screenshots, and variable definitions for implementation.
+3. Convert Figma output into the repository's current styling approach. The frontend currently uses React, Vite, TypeScript, and plain CSS. Do not add Tailwind or a new UI library just because generated Figma code uses it.
+4. Prefer UDS tokens for typography, colors, spacing, radius, shadow, input height, button style, panel layout, status colors, and component states.
+5. Keep the test-console behavior and certification evidence needs more important than decorative fidelity. If a UDS pattern conflicts with the test workflow, preserve the workflow and document the tradeoff.
+
+Known UDS token baseline from the current Figma file:
+
+- Font family: `Pretendard`.
+- Primary CTA: `#264870`.
+- Primary hover/deep navy: `#1d3756`.
+- Text strong: `#303445`.
+- Text secondary: `#6f7789`.
+- Text muted: `#8e94a3`.
+- Border: `#d3d6de`.
+- Surface: `#ffffff`.
+- Page background: `#f8f8f9`.
+- Success: `#1a8766`.
+- Error: `#e11d1d`.
+- Regular input/button height: `40px`.
+- Default component radius: `4px`.
+
+Relevant Figma pages/components for this project:
+
+- `GENERAL`: token and typography overview.
+- `Button`: primary/secondary/destructive/tertiary button variants and icon button guidance.
+- `Textfield`: input sizes and placeholder/typed/focused/error/disabled/readonly states.
+- `Pannel`: panel/card surface patterns.
+- `File up/download`: file upload and download guidance.
+- `Page header`: page-level header layout.
+
+Use Confluence as the source for UDS usage rules and Figma as the source for visual tokens and component anatomy. If they disagree, prefer the latest Confluence guidance for behavior/usage and Figma for measurable visual values, then note the mismatch in the implementation summary.
+
 ## Measurement Rules
 
 Server-side APM or metrics are the source of truth for certification evidence. Client-side numbers are supporting evidence.

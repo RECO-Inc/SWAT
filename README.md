@@ -5,6 +5,7 @@ Testbed for verifying TPS scalability of weighing-related APIs.
 ## Services
 
 - `api`: Go API server for weighing certificate upload and weighing data endpoints.
+- `frontend`: React/Vite web test console for API smoke tests.
 - `haproxy`: load balancer in front of three API containers.
 
 ## Start API
@@ -37,6 +38,16 @@ curl -i http://localhost:8080/health
 ```
 
 HAProxy stats are available at `http://localhost:8404`.
+
+## Start Frontend
+
+```sh
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend defaults to `http://localhost:8080` for API calls. Override it with `VITE_API_BASE_URL` when needed.
 
 ## Image Upload Load Test
 
