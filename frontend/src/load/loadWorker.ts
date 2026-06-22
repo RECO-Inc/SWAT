@@ -136,7 +136,9 @@ function buildRequest(
     const path =
       config.testType === 'image-upload-sync'
         ? '/api/weighing-slip/upload-sync'
-        : '/api/weighing-slip/upload'
+        : config.testType === 'image-upload-only'
+          ? '/api/weighing-slip/upload-only'
+          : '/api/weighing-slip/upload'
     return {
       url: `${config.apiBaseUrl}${path}`,
       init: { method: 'POST', headers, body: formData },

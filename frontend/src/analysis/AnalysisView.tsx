@@ -10,6 +10,7 @@ type Props = {
 const TEST_TYPE_LABELS: Record<string, string> = {
   'image-upload': '이미지 업로드 (비동기 OCR)',
   'image-upload-sync': '이미지 업로드 (동기 OCR)',
+  'image-upload-only': '이미지 업로드 (OCR 미연동)',
   'weighing-data': '계근 데이터 단건',
   'weighing-data-bulk': '계근 데이터 벌크',
 }

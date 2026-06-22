@@ -32,7 +32,7 @@ function App() {
     status: 'idle',
     message: 'No upload yet.',
   })
-  const [uploadMode, setUploadMode] = useState<'async' | 'sync'>('async')
+  const [uploadMode, setUploadMode] = useState<'async' | 'sync' | 'none'>('async')
   const [ocr, setOcr] = useState<RequestState>({ status: 'idle', message: '' })
   const [view, setView] = useState<View>('console')
   const [runs, setRuns] = useState<RunRecord[]>([])
@@ -88,9 +88,12 @@ function App() {
     const formData = new FormData()
     formData.append('file', file)
 
-    const endpoint = isSync
-      ? '/api/weighing-slip/upload-sync'
-      : '/api/weighing-slip/upload'
+    const endpoint =
+      uploadMode === 'sync'
+        ? '/api/weighing-slip/upload-sync'
+        : uploadMode === 'none'
+          ? '/api/weighing-slip/upload-only'
+          : '/api/weighing-slip/upload'
 
     try {
       const response = await fetch(`${normalizedApiBaseUrl}${endpoint}`, {
@@ -118,6 +121,12 @@ function App() {
         setUpload({
           status: 'success',
           message: `동기 OCR 완료 (${response.status}${latency}).`,
+          data,
+        })
+      } else if (uploadMode === 'none') {
+        setUpload({
+          status: 'success',
+          message: `업로드 접수됨 (${response.status}). OCR 미연동 모드입니다.`,
           data,
         })
       } else {
@@ -329,11 +338,12 @@ function App() {
                     <select
                       value={uploadMode}
                       onChange={(event) =>
-                        setUploadMode(event.target.value as 'async' | 'sync')
+                        setUploadMode(event.target.value as 'async' | 'sync' | 'none')
                       }
                     >
                       <option value="async">비동기 (즉시 응답 후 OCR)</option>
                       <option value="sync">동기 (OCR 완료 후 응답)</option>
+                      <option value="none">업로드만 (OCR 미연동)</option>
                     </select>
                   </label>
                 </div>

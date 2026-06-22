@@ -59,6 +59,7 @@ Keep services independently runnable, but manage source, local setup, and docs f
 Keep endpoint naming consistent with the certification scenarios.
 
 - `POST /api/weighing-slip/upload`: multipart upload for 100 KB-or-less weighing slip images. Async OCR mode: responds immediately, forwards the image to the OCR service in the background.
+- `POST /api/weighing-slip/upload-only`: pure upload path; accepts the image and responds immediately with no OCR forwarding (for measuring upload TPS in isolation).
 - `POST /api/weighing-slip/upload-sync`: same multipart upload, but runs OCR inline and only responds after the OCR result is returned.
 - `GET /api/weighing-slip/ocr-result/{uploadId}`: fetch the async OCR outcome (pending/done/error/dropped/disabled) for a prior upload.
 - `GET /api/weighing-slip/ocr-status`: live OCR pipeline summary plus recent per-request items (supports `limit` and `status` filter); used by the frontend "OCR 현황" monitor.

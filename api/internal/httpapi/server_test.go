@@ -288,6 +288,45 @@ func TestAsyncUploadWithoutOCRMarksDisabled(t *testing.T) {
 	}
 }
 
+func TestUploadOnlySkipsOCR(t *testing.T) {
+	t.Setenv("OCR_API_URL", "http://127.0.0.1:0")
+	handler := NewServer().Handler()
+
+	req := newMultipartUploadRequest(t, "/api/weighing-slip/upload-only", "certificate.jpg", []byte("fake image bytes"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+
+	var response UploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.UploadID == "" {
+		t.Fatal("expected upload id")
+	}
+
+	resultReq := httptest.NewRequest(http.MethodGet, "/api/weighing-slip/ocr-result/"+response.UploadID, nil)
+	resultRec := httptest.NewRecorder()
+	handler.ServeHTTP(resultRec, resultReq)
+	if resultRec.Code != http.StatusNotFound {
+		t.Fatalf("expected no ocr result for upload-only, got %d: %s", resultRec.Code, resultRec.Body.String())
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/weighing-slip/ocr-status", nil)
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+	var status OCRStatusResponse
+	if err := json.NewDecoder(statusRec.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Summary.Enqueued != 0 {
+		t.Fatalf("expected no ocr jobs enqueued, got %d", status.Summary.Enqueued)
+	}
+}
+
 func TestSyncUploadRunsOCR(t *testing.T) {
 	ocr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {

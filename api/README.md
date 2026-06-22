@@ -121,6 +121,16 @@ Returns a `summary` (queue depth/capacity, pending, enqueued, dropped, success, 
 
 The default upload limit is `102400` bytes. Set `MAX_UPLOAD_BYTES` when you need to test larger samples.
 
+### Upload Weighing Slip Image (No OCR)
+
+```sh
+curl -X POST http://localhost:8080/api/weighing-slip/upload-only \
+  -H "X-Test-Run-Id: CERT-20260617-001" \
+  -F "file=@./sample-certificate.jpg"
+```
+
+Accepts the image and responds `202` immediately with no OCR forwarding. The body is streamed to discard, so this is the cheapest path and is meant for measuring upload TPS in isolation from OCR throughput.
+
 ### Upload Weighing Slip Image (Sync OCR)
 
 ```sh

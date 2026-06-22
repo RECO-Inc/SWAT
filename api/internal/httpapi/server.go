@@ -262,6 +262,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /metrics", s.metricsText)
 	s.mux.HandleFunc("POST /api/weighing-slip/upload", s.uploadWeighingSlip)
+	s.mux.HandleFunc("POST /api/weighing-slip/upload-only", s.uploadWeighingSlipOnly)
 	s.mux.HandleFunc("POST /api/weighing-slip/upload-sync", s.uploadWeighingSlipSync)
 	s.mux.HandleFunc("GET /api/weighing-slip/ocr-status", s.ocrStatus)
 	s.mux.HandleFunc("GET /api/weighing-slip/ocr-result/{uploadId}", s.getOCRResult)
@@ -348,6 +349,38 @@ func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+
+	writeJSON(w, http.StatusAccepted, UploadResponse{
+		UploadID:  uploadID,
+		FileName:  fileName,
+		SizeBytes: sizeBytes,
+		Status:    "accepted",
+		Trace:     trace,
+	})
+}
+
+// uploadWeighingSlipOnly accepts the image and responds immediately without any
+// OCR forwarding. It is the pure upload path for measuring upload TPS in
+// isolation from OCR throughput.
+func (s *Server) uploadWeighingSlipOnly(w http.ResponseWriter, r *http.Request) {
+	trace := testRequestIDs(r)
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadBytes+4096)
+
+	fileName, sizeBytes, err := readMultipartFileMeta(r, "file", s.maxUploadBytes)
+	if err != nil {
+		s.metrics.uploadRejected.Add(1)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	uploadID, err := prefixedID("upl")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create upload id")
+		return
+	}
+
+	s.metrics.uploadAccepted.Add(1)
+	s.metrics.uploadBytesTotal.Add(sizeBytes)
 
 	writeJSON(w, http.StatusAccepted, UploadResponse{
 		UploadID:  uploadID,
@@ -758,6 +791,40 @@ func clampInt(value, low, high int) int {
 		return high
 	}
 	return value
+}
+
+// readMultipartFileMeta streams the named multipart file to io.Discard,
+// returning only its name and size. It avoids buffering the body, which keeps
+// the OCR-free upload path as cheap as possible for high-TPS tests.
+func readMultipartFileMeta(r *http.Request, fieldName string, maxBytes int64) (string, int64, error) {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return "", 0, errors.New("request must be multipart/form-data")
+	}
+
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			return "", 0, fmt.Errorf("multipart field %s is required", fieldName)
+		}
+		if err != nil {
+			return "", 0, errors.New("failed to read multipart body")
+		}
+
+		if part.FormName() != fieldName {
+			_ = part.Close()
+			continue
+		}
+
+		fileName := part.FileName()
+		sizeBytes, err := copyMax(io.Discard, part, maxBytes)
+		_ = part.Close()
+		if err != nil {
+			return "", 0, err
+		}
+
+		return fileName, sizeBytes, nil
+	}
 }
 
 func maxUploadBytesFromEnv() int64 {

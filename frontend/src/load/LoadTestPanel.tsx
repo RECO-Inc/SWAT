@@ -31,6 +31,7 @@ const DEFAULT_TEMPLATE = JSON.stringify(
 const TEST_TYPE_LABELS: Record<LoadTestType, string> = {
   'image-upload': '이미지 업로드 (비동기 OCR)',
   'image-upload-sync': '이미지 업로드 (동기 OCR)',
+  'image-upload-only': '이미지 업로드 (OCR 미연동)',
   'weighing-data': '계근 데이터 단건',
   'weighing-data-bulk': '계근 데이터 벌크',
 }
@@ -320,6 +321,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
           >
             <option value="image-upload">이미지 업로드 (비동기 OCR)</option>
             <option value="image-upload-sync">이미지 업로드 (동기 OCR)</option>
+            <option value="image-upload-only">이미지 업로드 (OCR 미연동)</option>
             <option value="weighing-data">계근 데이터 단건</option>
             <option value="weighing-data-bulk">계근 데이터 벌크</option>
           </select>
