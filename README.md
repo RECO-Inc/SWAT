@@ -1,5 +1,7 @@
 # SWAT
 
+[English](README.md) | [한국어](README.ko.md)
+
 Testbed for verifying TPS scalability of weighing-related APIs.
 
 ## Services
