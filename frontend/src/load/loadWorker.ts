@@ -1,10 +1,13 @@
 import { isImageTestType } from './loadTypes'
 import type {
+  LoadEvidence,
+  LoadEvidenceItem,
   LoadConfig,
   LoadSnapshot,
   WorkerInbound,
   WorkerOutbound,
 } from './loadTypes'
+import { generateWeighingItems } from '../weighing/weighingGenerator'
 
 const ctx = self as unknown as {
   postMessage: (message: WorkerOutbound) => void
@@ -29,6 +32,9 @@ const latencies: number[] = []
 const completionTimes: number[] = []
 const statusCounts: Record<string, number> = {}
 const errorCounts: Record<string, number> = {}
+const evidenceItems: LoadEvidenceItem[] = []
+
+let evidenceDropped = 0
 
 let progressTimer: ReturnType<typeof setInterval> | undefined
 
@@ -43,6 +49,8 @@ function resetState(): void {
   inFlight = 0
   latencies.length = 0
   completionTimes.length = 0
+  evidenceItems.length = 0
+  evidenceDropped = 0
   for (const key of Object.keys(statusCounts)) delete statusCounts[key]
   for (const key of Object.keys(errorCounts)) delete errorCounts[key]
 }
@@ -103,6 +111,8 @@ function buildSnapshot(isRunning: boolean): LoadSnapshot {
     maxLatencyMs: sorted.length > 0 ? sorted[sorted.length - 1] : 0,
     statusCounts: { ...statusCounts },
     errors,
+    evidenceCaptured: evidenceItems.length,
+    evidenceDropped,
   }
 }
 
@@ -114,10 +124,10 @@ function emitProgress(): void {
 function buildRequest(
   config: LoadConfig,
   imageBlob: Blob | undefined,
-  parsedTemplate: unknown,
   workerId: number,
   seq: number,
-): { url: string; init: RequestInit } {
+  requestIndex: number,
+): { url: string; init: RequestInit; method: string; requestBody?: unknown } {
   const headers: Record<string, string> = {
     'X-Test-Run-Id': config.testRunId,
     'X-Test-Client-Type': 'web',
@@ -142,6 +152,7 @@ function buildRequest(
     return {
       url: `${config.apiBaseUrl}${path}`,
       init: { method: 'POST', headers, body: formData },
+      method: 'POST',
     }
   }
 
@@ -149,32 +160,74 @@ function buildRequest(
 
   if (config.testType === 'weighing-data-bulk') {
     const size = Math.max(1, config.bulkSize ?? 1)
-    const items = Array.from({ length: size }, () => parsedTemplate)
+    const items = generateWeighingItems(size, (requestIndex - 1) * size + 1)
+    const requestBody = { items }
     return {
       url: `${config.apiBaseUrl}/api/weighing-data/bulk`,
-      init: { method: 'POST', headers, body: JSON.stringify({ items }) },
+      init: { method: 'POST', headers, body: JSON.stringify(requestBody) },
+      method: 'POST',
+      requestBody,
     }
   }
 
+  const requestBody = generateWeighingItems(1, requestIndex)[0]
   return {
     url: `${config.apiBaseUrl}/api/weighing-data`,
-    init: { method: 'POST', headers, body: JSON.stringify(parsedTemplate) },
+    init: { method: 'POST', headers, body: JSON.stringify(requestBody) },
+    method: 'POST',
+    requestBody,
+  }
+}
+
+function shouldCaptureEvidence(config: LoadConfig): boolean {
+  return !isImageTestType(config.testType)
+}
+
+function parseBody(text: string): unknown {
+  if (!text) return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+function captureEvidence(config: LoadConfig, item: LoadEvidenceItem): void {
+  if (!shouldCaptureEvidence(config)) return
+
+  const limit = Math.max(0, config.evidenceLimit ?? 0)
+  if (limit > 0 && evidenceItems.length >= limit) {
+    evidenceDropped++
+    return
+  }
+  evidenceItems.push(item)
+}
+
+function buildEvidence(): LoadEvidence {
+  return {
+    capturedCount: evidenceItems.length,
+    droppedCount: evidenceDropped,
+    items: evidenceItems,
   }
 }
 
 async function fireRequest(
   config: LoadConfig,
   imageBlob: Blob | undefined,
-  parsedTemplate: unknown,
   workerId: number,
   seq: number,
 ): Promise<void> {
-  sent++
+  const requestIndex = sent + 1
+  sent = requestIndex
   inFlight++
   const start = performance.now()
+  let request:
+    | { url: string; init: RequestInit; method: string; requestBody?: unknown }
+    | undefined
   try {
-    const { url, init } = buildRequest(config, imageBlob, parsedTemplate, workerId, seq)
-    const response = await fetch(url, init)
+    request = buildRequest(config, imageBlob, workerId, seq, requestIndex)
+    const response = await fetch(request.url, request.init)
+    const responseText = await response.text().catch(() => '')
     const latency = performance.now() - start
     latencies.push(latency)
     completionTimes.push(performance.now())
@@ -187,14 +240,40 @@ async function fireRequest(
       fail++
       recordError(`HTTP ${response.status}`)
     }
-    await response.arrayBuffer().catch(() => undefined)
+    captureEvidence(config, {
+      index: requestIndex,
+      workerId: `worker-${String(workerId + 1).padStart(3, '0')}`,
+      requestSeq: String(seq).padStart(6, '0'),
+      method: request.method,
+      url: request.url,
+      status: response.status,
+      ok: response.ok,
+      latencyMs: latency,
+      completedAt: new Date().toISOString(),
+      requestBody: request.requestBody,
+      responseBody: parseBody(responseText),
+    })
   } catch (error) {
     const latency = performance.now() - start
     latencies.push(latency)
     completionTimes.push(performance.now())
     fail++
     statusCounts.network = (statusCounts.network ?? 0) + 1
-    recordError(error instanceof Error ? error.message : 'network error')
+    const message = error instanceof Error ? error.message : 'network error'
+    recordError(message)
+    captureEvidence(config, {
+      index: requestIndex,
+      workerId: `worker-${String(workerId + 1).padStart(3, '0')}`,
+      requestSeq: String(seq).padStart(6, '0'),
+      method: request?.method ?? 'POST',
+      url: request?.url ?? '',
+      status: 'network',
+      ok: false,
+      latencyMs: latency,
+      completedAt: new Date().toISOString(),
+      requestBody: request?.requestBody,
+      error: message,
+    })
   } finally {
     inFlight--
   }
@@ -203,7 +282,6 @@ async function fireRequest(
 async function runLogicalWorker(
   config: LoadConfig,
   imageBlob: Blob | undefined,
-  parsedTemplate: unknown,
   workerId: number,
 ): Promise<void> {
   const intervalMs = config.workerTps > 0 ? 1000 / config.workerTps : 0
@@ -217,11 +295,11 @@ async function runLogicalWorker(
     seq++
     if (intervalMs > 0) {
       const tickStart = performance.now()
-      void fireRequest(config, imageBlob, parsedTemplate, workerId, seq)
+      void fireRequest(config, imageBlob, workerId, seq)
       const drift = performance.now() - tickStart
       await sleep(intervalMs - drift)
     } else {
-      await fireRequest(config, imageBlob, parsedTemplate, workerId, seq)
+      await fireRequest(config, imageBlob, workerId, seq)
     }
   }
 }
@@ -235,16 +313,6 @@ async function drainInFlight(): Promise<void> {
 
 async function startLoad(config: LoadConfig): Promise<void> {
   if (running) return
-
-  let parsedTemplate: unknown
-  if (!isImageTestType(config.testType)) {
-    try {
-      parsedTemplate = JSON.parse(config.jsonTemplate ?? '{}')
-    } catch {
-      ctx.postMessage({ type: 'error', message: 'JSON template is not valid JSON.' })
-      return
-    }
-  }
 
   let imageBlob: Blob | undefined
   if (isImageTestType(config.testType) && config.imageBytes) {
@@ -261,7 +329,7 @@ async function startLoad(config: LoadConfig): Promise<void> {
   progressTimer = setInterval(emitProgress, PROGRESS_INTERVAL_MS)
 
   const workers = Array.from({ length: Math.max(1, config.workerCount) }, (_, id) =>
-    runLogicalWorker(config, imageBlob, parsedTemplate, id),
+    runLogicalWorker(config, imageBlob, id),
   )
 
   await Promise.all(workers)
@@ -269,7 +337,11 @@ async function startLoad(config: LoadConfig): Promise<void> {
   await drainInFlight()
 
   if (progressTimer) clearInterval(progressTimer)
-  ctx.postMessage({ type: 'done', snapshot: buildSnapshot(false) })
+  ctx.postMessage({
+    type: 'done',
+    snapshot: buildSnapshot(false),
+    evidence: shouldCaptureEvidence(config) ? buildEvidence() : undefined,
+  })
 }
 
 ctx.onmessage = (event: MessageEvent<WorkerInbound>) => {

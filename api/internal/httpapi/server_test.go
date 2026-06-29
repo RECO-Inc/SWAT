@@ -157,10 +157,7 @@ func TestCreateAndListWeighing(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, createRec.Code, createRec.Body.String())
 	}
 
-	var createResponse struct {
-		Item  WeighingRecord `json:"item"`
-		Trace TestRequestIDs `json:"trace"`
-	}
+	var createResponse CreateWeighingResponse
 	if err := json.NewDecoder(createRec.Body).Decode(&createResponse); err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +166,9 @@ func TestCreateAndListWeighing(t *testing.T) {
 	}
 	if createResponse.Trace.WorkerID != "worker-001" {
 		t.Fatalf("expected worker trace, got %q", createResponse.Trace.WorkerID)
+	}
+	if createResponse.Request.TicketID != "ticket_123" {
+		t.Fatalf("expected echoed request ticket, got %q", createResponse.Request.TicketID)
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/weighings?ticketId=ticket_123", nil)
@@ -336,7 +336,7 @@ func TestSyncUploadRunsOCR(t *testing.T) {
 			t.Errorf("ocr stub missing file: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"parsed":{"ocr_amount":"2520"}}`))
+		_, _ = w.Write([]byte(`{"provider":"upstage","parsed":{"ocr_amount":"2520"},"final":{"ocr.amount":"2520","ocr.car_number":"87더2150"}}`))
 	}))
 	defer ocr.Close()
 
@@ -364,12 +364,18 @@ func TestSyncUploadRunsOCR(t *testing.T) {
 	if !strings.Contains(string(response.Result), "2520") {
 		t.Fatalf("expected ocr result body, got %s", string(response.Result))
 	}
+	if response.Provider != "upstage" {
+		t.Fatalf("expected provider upstage, got %q", response.Provider)
+	}
+	if !strings.Contains(string(response.Final), "ocr.amount") {
+		t.Fatalf("expected final mapped body, got %s", string(response.Final))
+	}
 }
 
 func TestAsyncUploadRunsOCRInBackground(t *testing.T) {
 	ocr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"parsed":{"ocr_amount":"2520"}}`))
+		_, _ = w.Write([]byte(`{"provider":"upstage","parsed":{"ocr_amount":"2520"},"final":{"ocr.amount":"2520","ocr.car_number":"87더2150"}}`))
 	}))
 	defer ocr.Close()
 
@@ -396,6 +402,12 @@ func TestAsyncUploadRunsOCRInBackground(t *testing.T) {
 			if !strings.Contains(string(result.Result), "2520") {
 				t.Fatalf("expected ocr result body, got %s", string(result.Result))
 			}
+			if result.Provider != "upstage" {
+				t.Fatalf("expected provider upstage, got %q", result.Provider)
+			}
+			if !strings.Contains(string(result.Final), "ocr.car_number") {
+				t.Fatalf("expected final mapped body, got %s", string(result.Final))
+			}
 			return
 		}
 		if result.Status == ocrStatusError {
@@ -411,7 +423,7 @@ func TestAsyncUploadRunsOCRInBackground(t *testing.T) {
 func TestOCRStatusEndpoint(t *testing.T) {
 	ocr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"parsed":{"ocr_amount":"2520"}}`))
+		_, _ = w.Write([]byte(`{"provider":"upstage","parsed":{"ocr_amount":"2520"},"final":{"ocr.amount":"2520"}}`))
 	}))
 	defer ocr.Close()
 
@@ -466,6 +478,12 @@ func TestOCRStatusEndpoint(t *testing.T) {
 	}
 	if status.Items[0].Status != ocrStatusDone {
 		t.Fatalf("expected item status done, got %q", status.Items[0].Status)
+	}
+	if status.Items[0].Provider != "upstage" {
+		t.Fatalf("expected provider upstage, got %q", status.Items[0].Provider)
+	}
+	if !strings.Contains(string(status.Items[0].Final), "ocr.amount") {
+		t.Fatalf("expected final mapped body, got %s", string(status.Items[0].Final))
 	}
 }
 

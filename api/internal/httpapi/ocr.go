@@ -127,6 +127,43 @@ func (c *ocrClient) call(ctx context.Context, fileName string, data []byte) (int
 	return resp.StatusCode, json.RawMessage(raw), nil
 }
 
+type ocrPayloadSummary struct {
+	Provider string
+	Parsed   json.RawMessage
+	Final    json.RawMessage
+}
+
+func summarizeOCRPayload(raw json.RawMessage) ocrPayloadSummary {
+	var payload map[string]json.RawMessage
+	if len(raw) == 0 {
+		return ocrPayloadSummary{}
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ocrPayloadSummary{}
+	}
+
+	var summary ocrPayloadSummary
+	if providerRaw, ok := payload["provider"]; ok {
+		_ = json.Unmarshal(providerRaw, &summary.Provider)
+	}
+	if parsed, ok := payload["parsed"]; ok {
+		summary.Parsed = cloneRawMessage(parsed)
+	}
+	if final, ok := payload["final"]; ok {
+		summary.Final = cloneRawMessage(final)
+	}
+	return summary
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	cloned := make([]byte, len(raw))
+	copy(cloned, raw)
+	return cloned
+}
+
 func envBool(name string, fallback bool) bool {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {

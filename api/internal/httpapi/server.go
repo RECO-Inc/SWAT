@@ -14,8 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -33,7 +34,7 @@ type Server struct {
 
 	uploadJobs chan UploadJob
 	auditJobs  chan AuditJob
-	metrics    *Metrics
+	metrics    *serverMetrics
 
 	maxUploadBytes int64
 
@@ -50,36 +51,6 @@ type UploadResponse struct {
 	SizeBytes int64          `json:"sizeBytes"`
 	Status    string         `json:"status"`
 	Trace     TestRequestIDs `json:"trace"`
-}
-
-type CreateWeighingRequest struct {
-	TicketID      string `json:"ticketId"`
-	VehicleNo     string `json:"vehicleNo"`
-	GrossWeightKg int64  `json:"grossWeightKg"`
-	TareWeightKg  int64  `json:"tareWeightKg"`
-}
-
-type WeighingRecord struct {
-	ID            string    `json:"id"`
-	TicketID      string    `json:"ticketId"`
-	VehicleNo     string    `json:"vehicleNo"`
-	GrossWeightKg int64     `json:"grossWeightKg"`
-	TareWeightKg  int64     `json:"tareWeightKg"`
-	NetWeightKg   int64     `json:"netWeightKg"`
-	RecordedAt    time.Time `json:"recordedAt"`
-}
-
-type BulkWeighingRequest struct {
-	Items []CreateWeighingRequest `json:"items"`
-}
-
-type BulkWeighingResponse struct {
-	Items         []WeighingRecord `json:"items"`
-	APICount      int              `json:"apiCount"`
-	RowCount      int              `json:"rowCount"`
-	Trace         TestRequestIDs   `json:"trace"`
-	RecordedAt    time.Time        `json:"recordedAt"`
-	RowThroughput string           `json:"rowThroughput"`
 }
 
 type TestResult struct {
@@ -125,6 +96,9 @@ type OCRResult struct {
 	Mode          string          `json:"mode"`
 	Status        string          `json:"status"`
 	OCRStatusCode int             `json:"ocrStatusCode,omitempty"`
+	Provider      string          `json:"provider,omitempty"`
+	Parsed        json.RawMessage `json:"parsed,omitempty"`
+	Final         json.RawMessage `json:"final,omitempty"`
 	Result        json.RawMessage `json:"result,omitempty"`
 	Error         string          `json:"error,omitempty"`
 	Trace         TestRequestIDs  `json:"trace"`
@@ -142,6 +116,9 @@ type SyncUploadResponse struct {
 	Status        string          `json:"status"`
 	OCRStatusCode int             `json:"ocrStatusCode"`
 	LatencyMs     float64         `json:"latencyMs"`
+	Provider      string          `json:"provider,omitempty"`
+	Parsed        json.RawMessage `json:"parsed,omitempty"`
+	Final         json.RawMessage `json:"final,omitempty"`
 	Result        json.RawMessage `json:"result,omitempty"`
 	Trace         TestRequestIDs  `json:"trace"`
 }
@@ -157,6 +134,9 @@ type OCRStatusItem struct {
 	OCRStatusCode int             `json:"ocrStatusCode,omitempty"`
 	LatencyMs     float64         `json:"latencyMs,omitempty"`
 	Error         string          `json:"error,omitempty"`
+	Provider      string          `json:"provider,omitempty"`
+	Parsed        json.RawMessage `json:"parsed,omitempty"`
+	Final         json.RawMessage `json:"final,omitempty"`
 	Result        json.RawMessage `json:"result,omitempty"`
 	QueuedAt      time.Time       `json:"queuedAt"`
 	StartedAt     *time.Time      `json:"startedAt,omitempty"`
@@ -201,25 +181,6 @@ type AuditJob struct {
 	QueuedAt   time.Time
 }
 
-type Metrics struct {
-	requestTotal      atomic.Int64
-	requestErrorTotal atomic.Int64
-	uploadAccepted    atomic.Int64
-	uploadRejected    atomic.Int64
-	uploadBytesTotal  atomic.Int64
-	weighingRowsTotal atomic.Int64
-	testResultsTotal  atomic.Int64
-	asyncDroppedTotal atomic.Int64
-
-	ocrEnqueuedTotal atomic.Int64
-	ocrDroppedTotal  atomic.Int64
-	ocrSuccessTotal  atomic.Int64
-	ocrErrorTotal    atomic.Int64
-	ocrPending       atomic.Int64
-
-	inFlight atomic.Int64
-}
-
 type errorResponse struct {
 	Error string `json:"error"`
 }
@@ -229,7 +190,6 @@ func NewServer() *Server {
 		mux:            http.NewServeMux(),
 		uploadJobs:     make(chan UploadJob, envInt("OCR_ASYNC_QUEUE", defaultOCRAsyncQueue)),
 		auditJobs:      make(chan AuditJob, auditQueueSize),
-		metrics:        &Metrics{},
 		maxUploadBytes: maxUploadBytesFromEnv(),
 		ocr:            newOCRClient(),
 		ocrResults:     make(map[string]*OCRResult),
@@ -247,6 +207,9 @@ func NewServer() *Server {
 		},
 	}
 
+	reg := prometheus.NewRegistry()
+	server.metrics = newServerMetrics(reg, server)
+
 	server.routes()
 	server.startAsyncWorkers()
 
@@ -260,12 +223,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.health)
 	s.mux.HandleFunc("GET /healthz", s.health)
-	s.mux.HandleFunc("GET /metrics", s.metricsText)
+	s.mux.Handle("GET /metrics", s.metrics.handler())
 	s.mux.HandleFunc("POST /api/weighing-slip/upload", s.uploadWeighingSlip)
 	s.mux.HandleFunc("POST /api/weighing-slip/upload-only", s.uploadWeighingSlipOnly)
 	s.mux.HandleFunc("POST /api/weighing-slip/upload-sync", s.uploadWeighingSlipSync)
 	s.mux.HandleFunc("GET /api/weighing-slip/ocr-status", s.ocrStatus)
 	s.mux.HandleFunc("GET /api/weighing-slip/ocr-result/{uploadId}", s.getOCRResult)
+	s.mux.HandleFunc("GET /api/weighing-data", s.listWeighingData)
 	s.mux.HandleFunc("POST /api/weighing-data", s.createWeighing)
 	s.mux.HandleFunc("POST /api/weighing-data/bulk", s.createBulkWeighing)
 	s.mux.HandleFunc("POST /api/test-result", s.createTestResult)
@@ -284,10 +248,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"maxUploadBytes":   s.maxUploadBytes,
 		"uploadQueueDepth": len(s.uploadJobs),
 		"ocrEnabled":       s.ocr.enabled,
-		"ocrPending":       s.metrics.ocrPending.Load(),
-		"ocrSuccess":       s.metrics.ocrSuccessTotal.Load(),
-		"ocrError":         s.metrics.ocrErrorTotal.Load(),
-		"ocrDropped":       s.metrics.ocrDroppedTotal.Load(),
+		"ocrPending":       s.metrics.ocrPendingCount.Load(),
+		"ocrSuccess":       s.metrics.ocrSuccessCount.Load(),
+		"ocrError":         s.metrics.ocrErrorCount.Load(),
+		"ocrDropped":       s.metrics.ocrDroppedCount.Load(),
 	})
 }
 
@@ -300,7 +264,7 @@ func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 
 	fileName, data, sizeBytes, err := readMultipartFileBytes(r, "file", s.maxUploadBytes)
 	if err != nil {
-		s.metrics.uploadRejected.Add(1)
+		s.metrics.uploadRejected.Inc()
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -322,8 +286,8 @@ func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 		QueuedAt:  now,
 	}
 
-	s.metrics.uploadAccepted.Add(1)
-	s.metrics.uploadBytesTotal.Add(sizeBytes)
+	s.metrics.uploadAccepted.Inc()
+	s.metrics.uploadBytesTotal.Add(float64(sizeBytes))
 
 	if !s.ocr.enabled {
 		result.Status = ocrStatusDisabled
@@ -339,10 +303,10 @@ func (s *Server) uploadWeighingSlip(w http.ResponseWriter, r *http.Request) {
 			QueuedAt:  now,
 		}
 		if s.enqueueUpload(job) {
-			s.metrics.ocrEnqueuedTotal.Add(1)
-			s.metrics.ocrPending.Add(1)
+			s.metrics.incOCREnqueued()
+			s.metrics.incOCRPending()
 		} else {
-			s.metrics.ocrDroppedTotal.Add(1)
+			s.metrics.incOCRDropped()
 			s.markOCRResult(uploadID, func(res *OCRResult) {
 				res.Status = ocrStatusDropped
 				res.Error = "ocr queue is full"
@@ -368,7 +332,7 @@ func (s *Server) uploadWeighingSlipOnly(w http.ResponseWriter, r *http.Request) 
 
 	fileName, sizeBytes, err := readMultipartFileMeta(r, "file", s.maxUploadBytes)
 	if err != nil {
-		s.metrics.uploadRejected.Add(1)
+		s.metrics.uploadRejected.Inc()
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -379,8 +343,8 @@ func (s *Server) uploadWeighingSlipOnly(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.metrics.uploadAccepted.Add(1)
-	s.metrics.uploadBytesTotal.Add(sizeBytes)
+	s.metrics.uploadAccepted.Inc()
+	s.metrics.uploadBytesTotal.Add(float64(sizeBytes))
 
 	writeJSON(w, http.StatusAccepted, UploadResponse{
 		UploadID:  uploadID,
@@ -399,7 +363,7 @@ func (s *Server) uploadWeighingSlipSync(w http.ResponseWriter, r *http.Request) 
 
 	fileName, data, sizeBytes, err := readMultipartFileBytes(r, "file", s.maxUploadBytes)
 	if err != nil {
-		s.metrics.uploadRejected.Add(1)
+		s.metrics.uploadRejected.Inc()
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -410,8 +374,8 @@ func (s *Server) uploadWeighingSlipSync(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.metrics.uploadAccepted.Add(1)
-	s.metrics.uploadBytesTotal.Add(sizeBytes)
+	s.metrics.uploadAccepted.Inc()
+	s.metrics.uploadBytesTotal.Add(float64(sizeBytes))
 
 	if !s.ocr.enabled {
 		writeError(w, http.StatusServiceUnavailable, "ocr service is not configured")
@@ -424,14 +388,15 @@ func (s *Server) uploadWeighingSlipSync(w http.ResponseWriter, r *http.Request) 
 	start := time.Now()
 	statusCode, raw, callErr := s.ocr.call(ctx, fileName, data)
 	latencyMs := float64(time.Since(start).Microseconds()) / 1000
+	summary := summarizeOCRPayload(raw)
 
 	if callErr != nil {
-		s.metrics.ocrErrorTotal.Add(1)
+		s.metrics.incOCRError()
 		writeError(w, http.StatusBadGateway, "ocr request failed: "+callErr.Error())
 		return
 	}
 	if statusCode >= http.StatusBadRequest {
-		s.metrics.ocrErrorTotal.Add(1)
+		s.metrics.incOCRError()
 		writeJSON(w, http.StatusBadGateway, SyncUploadResponse{
 			UploadID:      uploadID,
 			FileName:      fileName,
@@ -439,13 +404,16 @@ func (s *Server) uploadWeighingSlipSync(w http.ResponseWriter, r *http.Request) 
 			Status:        ocrStatusError,
 			OCRStatusCode: statusCode,
 			LatencyMs:     latencyMs,
+			Provider:      summary.Provider,
+			Parsed:        summary.Parsed,
+			Final:         summary.Final,
 			Result:        raw,
 			Trace:         trace,
 		})
 		return
 	}
 
-	s.metrics.ocrSuccessTotal.Add(1)
+	s.metrics.incOCRSuccess()
 	writeJSON(w, http.StatusOK, SyncUploadResponse{
 		UploadID:      uploadID,
 		FileName:      fileName,
@@ -453,6 +421,9 @@ func (s *Server) uploadWeighingSlipSync(w http.ResponseWriter, r *http.Request) 
 		Status:        ocrStatusDone,
 		OCRStatusCode: statusCode,
 		LatencyMs:     latencyMs,
+		Provider:      summary.Provider,
+		Parsed:        summary.Parsed,
+		Final:         summary.Final,
 		Result:        raw,
 		Trace:         trace,
 	})
@@ -501,6 +472,9 @@ func (s *Server) ocrStatus(w http.ResponseWriter, r *http.Request) {
 			OCRStatusCode: result.OCRStatusCode,
 			LatencyMs:     result.LatencyMs,
 			Error:         result.Error,
+			Provider:      result.Provider,
+			Parsed:        result.Parsed,
+			Final:         result.Final,
 			Result:        result.Result,
 			QueuedAt:      result.QueuedAt,
 			StartedAt:     result.StartedAt,
@@ -515,11 +489,11 @@ func (s *Server) ocrStatus(w http.ResponseWriter, r *http.Request) {
 			Enabled:       s.ocr.enabled,
 			QueueDepth:    len(s.uploadJobs),
 			QueueCapacity: cap(s.uploadJobs),
-			Pending:       s.metrics.ocrPending.Load(),
-			Enqueued:      s.metrics.ocrEnqueuedTotal.Load(),
-			Dropped:       s.metrics.ocrDroppedTotal.Load(),
-			Success:       s.metrics.ocrSuccessTotal.Load(),
-			Error:         s.metrics.ocrErrorTotal.Load(),
+			Pending:       s.metrics.ocrPendingCount.Load(),
+			Enqueued:      s.metrics.ocrEnqueuedCount.Load(),
+			Dropped:       s.metrics.ocrDroppedCount.Load(),
+			Success:       s.metrics.ocrSuccessCount.Load(),
+			Error:         s.metrics.ocrErrorCount.Load(),
 			Stored:        stored,
 			GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		},
@@ -553,7 +527,7 @@ func (s *Server) createWeighing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	record, err := newWeighingRecord(req)
+	record, err := newWeighingRecord(req, trace)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -563,12 +537,13 @@ func (s *Server) createWeighing(w http.ResponseWriter, r *http.Request) {
 	s.weighings = append(s.weighings, record)
 	s.mu.Unlock()
 
-	s.metrics.weighingRowsTotal.Add(1)
+	s.metrics.weighingRowsTotal.Inc()
 	s.enqueueAudit(AuditJob{Endpoint: "/api/weighing-data", StatusCode: http.StatusCreated, Trace: trace, QueuedAt: time.Now().UTC()})
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"item":  record,
-		"trace": trace,
+	writeJSON(w, http.StatusCreated, CreateWeighingResponse{
+		Request: req,
+		Item:    record,
+		Trace:   trace,
 	})
 }
 
@@ -589,7 +564,7 @@ func (s *Server) createBulkWeighing(w http.ResponseWriter, r *http.Request) {
 
 	records := make([]WeighingRecord, 0, len(req.Items))
 	for _, item := range req.Items {
-		record, err := newWeighingRecord(item)
+		record, err := newWeighingRecord(item, trace)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -601,10 +576,11 @@ func (s *Server) createBulkWeighing(w http.ResponseWriter, r *http.Request) {
 	s.weighings = append(s.weighings, records...)
 	s.mu.Unlock()
 
-	s.metrics.weighingRowsTotal.Add(int64(len(records)))
+	s.metrics.weighingRowsTotal.Add(float64(len(records)))
 	s.enqueueAudit(AuditJob{Endpoint: "/api/weighing-data/bulk", StatusCode: http.StatusCreated, Trace: trace, QueuedAt: time.Now().UTC()})
 
 	writeJSON(w, http.StatusCreated, BulkWeighingResponse{
+		Requests:      req.Items,
 		Items:         records,
 		APICount:      1,
 		RowCount:      len(records),
@@ -634,59 +610,12 @@ func (s *Server) createTestResult(w http.ResponseWriter, r *http.Request) {
 	s.testResults = append(s.testResults, result)
 	s.mu.Unlock()
 
-	s.metrics.testResultsTotal.Add(1)
+	s.metrics.testResultsTotal.Inc()
 
 	writeJSON(w, http.StatusAccepted, result)
 }
 
-func (s *Server) metricsText(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	_, _ = fmt.Fprintf(w, "# HELP swat_http_requests_total Total HTTP requests.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_http_requests_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_http_requests_total %d\n", s.metrics.requestTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_http_request_errors_total Total HTTP requests that returned 4xx or 5xx.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_http_request_errors_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_http_request_errors_total %d\n", s.metrics.requestErrorTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_http_in_flight_requests Current in-flight HTTP requests.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_http_in_flight_requests gauge\n")
-	_, _ = fmt.Fprintf(w, "swat_http_in_flight_requests %d\n", s.metrics.inFlight.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_upload_accepted_total Accepted weighing slip uploads.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_upload_accepted_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_upload_accepted_total %d\n", s.metrics.uploadAccepted.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_upload_rejected_total Rejected weighing slip uploads.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_upload_rejected_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_upload_rejected_total %d\n", s.metrics.uploadRejected.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_upload_bytes_total Accepted upload payload bytes.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_upload_bytes_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_upload_bytes_total %d\n", s.metrics.uploadBytesTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_weighing_rows_total Accepted weighing data rows.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_weighing_rows_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_weighing_rows_total %d\n", s.metrics.weighingRowsTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_async_queue_depth Current async job queue depth.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_async_queue_depth gauge\n")
-	_, _ = fmt.Fprintf(w, "swat_async_queue_depth{queue=%q} %d\n", "upload", len(s.uploadJobs))
-	_, _ = fmt.Fprintf(w, "swat_async_queue_depth{queue=%q} %d\n", "audit", len(s.auditJobs))
-	_, _ = fmt.Fprintf(w, "# HELP swat_async_dropped_total Async jobs dropped because queues were full.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_async_dropped_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_async_dropped_total %d\n", s.metrics.asyncDroppedTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_enqueued_total Uploads queued for asynchronous OCR.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_enqueued_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_ocr_enqueued_total %d\n", s.metrics.ocrEnqueuedTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_dropped_total Async OCR jobs dropped because the OCR queue was full.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_dropped_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_ocr_dropped_total %d\n", s.metrics.ocrDroppedTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_success_total OCR requests that returned a 2xx/3xx result.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_success_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_ocr_success_total %d\n", s.metrics.ocrSuccessTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_error_total OCR requests that failed or returned a 4xx/5xx result.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_error_total counter\n")
-	_, _ = fmt.Fprintf(w, "swat_ocr_error_total %d\n", s.metrics.ocrErrorTotal.Load())
-	_, _ = fmt.Fprintf(w, "# HELP swat_ocr_pending Async OCR jobs currently queued or in flight.\n")
-	_, _ = fmt.Fprintf(w, "# TYPE swat_ocr_pending gauge\n")
-	_, _ = fmt.Fprintf(w, "swat_ocr_pending %d\n", s.metrics.ocrPending.Load())
-}
-
-func newWeighingRecord(req CreateWeighingRequest) (WeighingRecord, error) {
+func newWeighingRecordCore(req CreateWeighingRequest) (WeighingRecord, error) {
 	if req.GrossWeightKg <= 0 {
 		return WeighingRecord{}, errors.New("grossWeightKg must be greater than 0")
 	}
@@ -872,7 +801,7 @@ func (s *Server) enqueueUpload(job UploadJob) bool {
 	case s.uploadJobs <- job:
 		return true
 	default:
-		s.metrics.asyncDroppedTotal.Add(1)
+		s.metrics.asyncDroppedTotal.Inc()
 		return false
 	}
 }
@@ -881,7 +810,7 @@ func (s *Server) enqueueAudit(job AuditJob) {
 	select {
 	case s.auditJobs <- job:
 	default:
-		s.metrics.asyncDroppedTotal.Add(1)
+		s.metrics.asyncDroppedTotal.Inc()
 	}
 }
 
@@ -904,7 +833,7 @@ func (s *Server) startAsyncWorkers() {
 
 // processOCRJob forwards a queued upload to the OCR service and records the outcome.
 func (s *Server) processOCRJob(job UploadJob) {
-	defer s.metrics.ocrPending.Add(-1)
+	defer s.metrics.decOCRPending()
 
 	start := time.Now()
 	s.markOCRResult(job.UploadID, func(res *OCRResult) {
@@ -919,10 +848,11 @@ func (s *Server) processOCRJob(job UploadJob) {
 	finished := time.Now()
 	latencyMs := float64(finished.Sub(start).Microseconds()) / 1000
 	finishedUTC := finished.UTC()
+	summary := summarizeOCRPayload(raw)
 
 	switch {
 	case err != nil:
-		s.metrics.ocrErrorTotal.Add(1)
+		s.metrics.incOCRError()
 		s.markOCRResult(job.UploadID, func(res *OCRResult) {
 			res.Status = ocrStatusError
 			res.Error = err.Error()
@@ -930,19 +860,25 @@ func (s *Server) processOCRJob(job UploadJob) {
 			res.LatencyMs = latencyMs
 		})
 	case statusCode >= http.StatusBadRequest:
-		s.metrics.ocrErrorTotal.Add(1)
+		s.metrics.incOCRError()
 		s.markOCRResult(job.UploadID, func(res *OCRResult) {
 			res.Status = ocrStatusError
 			res.OCRStatusCode = statusCode
+			res.Provider = summary.Provider
+			res.Parsed = summary.Parsed
+			res.Final = summary.Final
 			res.Result = raw
 			res.FinishedAt = &finishedUTC
 			res.LatencyMs = latencyMs
 		})
 	default:
-		s.metrics.ocrSuccessTotal.Add(1)
+		s.metrics.incOCRSuccess()
 		s.markOCRResult(job.UploadID, func(res *OCRResult) {
 			res.Status = ocrStatusDone
 			res.OCRStatusCode = statusCode
+			res.Provider = summary.Provider
+			res.Parsed = summary.Parsed
+			res.Final = summary.Final
 			res.Result = raw
 			res.FinishedAt = &finishedUTC
 			res.LatencyMs = latencyMs
@@ -1009,15 +945,15 @@ func (s *Server) withMetrics(next http.Handler) http.Handler {
 			statusCode:     http.StatusOK,
 		}
 
-		s.metrics.inFlight.Add(1)
+		s.metrics.httpInFlight.Inc()
 		start := time.Now()
 		next.ServeHTTP(recorder, r)
-		s.metrics.inFlight.Add(-1)
+		s.metrics.httpInFlight.Dec()
 
-		s.metrics.requestTotal.Add(1)
-		if recorder.statusCode >= http.StatusBadRequest {
-			s.metrics.requestErrorTotal.Add(1)
-		}
+		elapsed := time.Since(start).Seconds()
+		route := requestRoute(r)
+		testRunID := strings.TrimSpace(r.Header.Get("X-Test-Run-Id"))
+		s.metrics.observeHTTP(r.Method, route, testRunID, recorder.statusCode, elapsed)
 
 		w.Header().Set("X-SWAT-Handler-Duration-Ms", strconv.FormatInt(time.Since(start).Milliseconds(), 10))
 	})

@@ -27,8 +27,9 @@ export interface LoadConfig {
   imageBytes?: ArrayBuffer
   imageName?: string
   imageContentType?: string
-  jsonTemplate?: string
   bulkSize?: number
+  /** Max request/response evidence entries to keep for downloads. 0 means unlimited. */
+  evidenceLimit?: number
 }
 
 export interface LoadSnapshot {
@@ -47,6 +48,8 @@ export interface LoadSnapshot {
   maxLatencyMs: number
   statusCounts: Record<string, number>
   errors: string[]
+  evidenceCaptured: number
+  evidenceDropped: number
 }
 
 export interface LoadSample {
@@ -73,13 +76,34 @@ export interface RunRecord {
   final: LoadSnapshot
 }
 
+export interface LoadEvidenceItem {
+  index: number
+  workerId: string
+  requestSeq: string
+  method: string
+  url: string
+  status: number | 'network'
+  ok: boolean
+  latencyMs: number
+  completedAt: string
+  requestBody: unknown
+  responseBody?: unknown
+  error?: string
+}
+
+export interface LoadEvidence {
+  capturedCount: number
+  droppedCount: number
+  items: LoadEvidenceItem[]
+}
+
 export type WorkerInbound =
   | { type: 'start'; config: LoadConfig }
   | { type: 'stop' }
 
 export type WorkerOutbound =
   | { type: 'progress'; snapshot: LoadSnapshot }
-  | { type: 'done'; snapshot: LoadSnapshot }
+  | { type: 'done'; snapshot: LoadSnapshot; evidence?: LoadEvidence }
   | { type: 'error'; message: string }
 
 export function emptySnapshot(durationSec = 0): LoadSnapshot {
@@ -99,5 +123,7 @@ export function emptySnapshot(durationSec = 0): LoadSnapshot {
     maxLatencyMs: 0,
     statusCounts: {},
     errors: [],
+    evidenceCaptured: 0,
+    evidenceDropped: 0,
   }
 }

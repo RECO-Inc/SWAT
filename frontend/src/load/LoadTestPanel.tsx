@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   LoadConfig,
+  LoadEvidence,
   LoadSample,
   LoadSnapshot,
   LoadTestType,
@@ -9,6 +10,7 @@ import type {
 } from './loadTypes'
 import { emptySnapshot, isImageTestType } from './loadTypes'
 import FileUpload from '../components/FileUpload'
+import { WEIGHING_PROFILE_NAME } from '../weighing/weighingGenerator'
 
 type Props = {
   apiBaseUrl: string
@@ -16,17 +18,6 @@ type Props = {
   deviceId: string
   onRunComplete: (run: RunRecord) => void
 }
-
-const DEFAULT_TEMPLATE = JSON.stringify(
-  {
-    ticketId: '',
-    vehicleNo: 'load-test',
-    grossWeightKg: 24000,
-    tareWeightKg: 9000,
-  },
-  null,
-  2,
-)
 
 const TEST_TYPE_LABELS: Record<LoadTestType, string> = {
   'image-upload': '이미지 업로드 (비동기 OCR)',
@@ -36,19 +27,23 @@ const TEST_TYPE_LABELS: Record<LoadTestType, string> = {
   'weighing-data-bulk': '계근 데이터 벌크',
 }
 
+type RateMode = 'fixed' | 'max'
+
 function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props) {
   const [testType, setTestType] = useState<LoadTestType>('image-upload')
   const [authToken, setAuthToken] = useState('')
+  const [rateMode, setRateMode] = useState<RateMode>('fixed')
   const [workerCount, setWorkerCount] = useState(100)
   const [workerTps, setWorkerTps] = useState(1)
   const [durationSec, setDurationSec] = useState(60)
   const [rampUpSec, setRampUpSec] = useState(5)
   const [syntheticKb, setSyntheticKb] = useState(100)
   const [loadFile, setLoadFile] = useState<File | null>(null)
-  const [jsonTemplate, setJsonTemplate] = useState(DEFAULT_TEMPLATE)
   const [bulkSize, setBulkSize] = useState(10)
+  const [evidenceLimit, setEvidenceLimit] = useState(0)
 
   const [snapshot, setSnapshot] = useState<LoadSnapshot>(emptySnapshot())
+  const [loadEvidence, setLoadEvidence] = useState<LoadEvidence | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [submitState, setSubmitState] = useState('')
@@ -63,13 +58,18 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
     }
   }, [])
 
+  const effectiveWorkerTps = rateMode === 'max' ? 0 : Math.max(1, workerTps)
+
   const targetTps = useMemo(() => {
-    if (workerTps <= 0) return '최대치(closed loop)'
-    return `${workerCount * workerTps} TPS`
-  }, [workerCount, workerTps])
+    if (effectiveWorkerTps <= 0) return '최대치(closed loop)'
+    return `${workerCount * effectiveWorkerTps} TPS`
+  }, [workerCount, effectiveWorkerTps])
 
   const isImage = isImageTestType(testType)
   const isBulk = testType === 'weighing-data-bulk'
+  const isWeighing = !isImage
+  const hasEvidence = Boolean(loadEvidence && loadEvidence.items.length > 0)
+  const averageTps = snapshot.elapsedSec > 0 ? snapshot.sent / snapshot.elapsedSec : 0
 
   async function buildImageBytes(): Promise<{
     bytes: ArrayBuffer
@@ -97,6 +97,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
   async function start() {
     setError('')
     setSubmitState('')
+    setLoadEvidence(null)
 
     const config: LoadConfig = {
       apiBaseUrl,
@@ -105,11 +106,11 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
       deviceId,
       authToken,
       workerCount: Math.max(1, workerCount),
-      workerTps: Math.max(0, workerTps),
+      workerTps: effectiveWorkerTps,
       durationSec: Math.max(0, durationSec),
       rampUpSec: Math.max(0, rampUpSec),
-      jsonTemplate,
       bulkSize: Math.max(1, bulkSize),
+      evidenceLimit: Math.max(0, evidenceLimit),
     }
 
     const transfer: Transferable[] = []
@@ -147,6 +148,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         samplesRef.current.push(toSample(message.snapshot))
       } else if (message.type === 'done') {
         setSnapshot(message.snapshot)
+        setLoadEvidence(message.evidence ?? null)
         samplesRef.current.push(toSample(message.snapshot))
         setRunning(false)
         onRunComplete({
@@ -183,9 +185,9 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
     return {
       testRunId,
       testType,
-      targetTps: workerTps > 0 ? workerCount * workerTps : 0,
+      targetTps: effectiveWorkerTps > 0 ? workerCount * effectiveWorkerTps : 0,
       workerCount,
-      workerTps,
+      workerTps: effectiveWorkerTps,
       durationSec,
       sentCount: snapshot.sent,
       successCount: snapshot.success,
@@ -204,12 +206,21 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         testRunId,
         deviceId,
         workerCount,
-        workerTps,
+        workerTps: effectiveWorkerTps,
+        rateMode,
         durationSec,
         rampUpSec,
         bulkSize: isBulk ? bulkSize : undefined,
+        weighingProfile: isWeighing ? WEIGHING_PROFILE_NAME : undefined,
+        evidenceLimit: isWeighing ? evidenceLimit : undefined,
       },
       result: snapshot,
+      evidence: loadEvidence
+        ? {
+            capturedCount: loadEvidence.capturedCount,
+            droppedCount: loadEvidence.droppedCount,
+          }
+        : undefined,
       exportedAt: new Date().toISOString(),
     }
     downloadFile(
@@ -223,18 +234,22 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
     const rows: Array<[string, string | number]> = [
       ['testRunId', testRunId],
       ['testType', testType],
+      ['rateMode', rateMode],
       ['workerCount', workerCount],
-      ['workerTps', workerTps],
+      ['workerTps', effectiveWorkerTps],
       ['durationSec', durationSec],
       ['elapsedSec', round(snapshot.elapsedSec)],
       ['sent', snapshot.sent],
       ['success', snapshot.success],
       ['fail', snapshot.fail],
       ['currentTps', round(snapshot.currentTps)],
+      ['averageTps', round(averageTps)],
       ['avgLatencyMs', round(snapshot.avgLatencyMs)],
       ['p95LatencyMs', round(snapshot.p95LatencyMs)],
       ['p99LatencyMs', round(snapshot.p99LatencyMs)],
       ['maxLatencyMs', round(snapshot.maxLatencyMs)],
+      ['evidenceCaptured', snapshot.evidenceCaptured],
+      ['evidenceDropped', snapshot.evidenceDropped],
     ]
     for (const [code, count] of Object.entries(snapshot.statusCounts)) {
       rows.push([`status_${code}`, count])
@@ -261,10 +276,10 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
     return [
       `Test Run: ${testRunId}`,
       `Type: ${TEST_TYPE_LABELS[testType]}`,
-      `Model: ${workerCount} workers x ${workerTps} TPS (target ${targetTps})`,
+      `Model: ${workerCount} workers x ${effectiveWorkerTps} TPS (target ${targetTps})`,
       `Duration: ${round(snapshot.elapsedSec)}s / ${durationSec}s`,
       `Sent ${snapshot.sent} / Success ${snapshot.success} / Fail ${snapshot.fail} (${successRate}%)`,
-      `TPS now: ${round(snapshot.currentTps)}`,
+      `TPS now: ${round(snapshot.currentTps)} / avg ${round(averageTps)}`,
       `Latency avg ${round(snapshot.avgLatencyMs)}ms / p95 ${round(snapshot.p95LatencyMs)}ms / p99 ${round(snapshot.p99LatencyMs)}ms`,
       `Status: ${Object.entries(snapshot.statusCounts)
         .map(([k, v]) => `${k}=${v}`)
@@ -289,6 +304,75 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         submitError instanceof Error ? submitError.message : '결과 전송 실패',
       )
     }
+  }
+
+  function handleTestTypeChange(next: LoadTestType) {
+    setTestType(next)
+    if (!isImageTestType(next)) {
+      setRateMode('max')
+      setWorkerTps(0)
+    }
+  }
+
+  function handleRateModeChange(next: RateMode) {
+    setRateMode(next)
+    if (next === 'max') {
+      setWorkerTps(0)
+    } else if (workerTps <= 0) {
+      setWorkerTps(1)
+    }
+  }
+
+  function exportEvidenceRequests() {
+    if (!loadEvidence) return
+    const sentItems = flattenEvidenceRequestRows(loadEvidence)
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      profile: WEIGHING_PROFILE_NAME,
+      count: sentItems.length,
+      items: sentItems,
+    }
+    downloadFile(
+      `swat-weighing-requests-${testRunId}.json`,
+      JSON.stringify(payload, null, 2),
+      'application/json',
+    )
+  }
+
+  function exportEvidenceResponses() {
+    if (!loadEvidence) return
+    const payload = {
+      testRunId,
+      testType,
+      exportedAt: new Date().toISOString(),
+      capturedCount: loadEvidence.capturedCount,
+      droppedCount: loadEvidence.droppedCount,
+      responses: loadEvidence.items.map((item) => ({
+        index: item.index,
+        workerId: item.workerId,
+        requestSeq: item.requestSeq,
+        status: item.status,
+        ok: item.ok,
+        latencyMs: item.latencyMs,
+        completedAt: item.completedAt,
+        body: item.responseBody,
+        error: item.error,
+      })),
+    }
+    downloadFile(
+      `swat-weighing-responses-${testRunId}.json`,
+      JSON.stringify(payload, null, 2),
+      'application/json',
+    )
+  }
+
+  function exportEvidenceComparison() {
+    if (!loadEvidence) return
+    downloadFile(
+      `swat-weighing-comparison-${testRunId}.json`,
+      JSON.stringify(buildEvidenceComparison(loadEvidence, testRunId, testType), null, 2),
+      'application/json',
+    )
   }
 
   const hasResult = snapshot.sent > 0
@@ -316,7 +400,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
           <span>테스트 종류</span>
           <select
             value={testType}
-            onChange={(event) => setTestType(event.target.value as LoadTestType)}
+            onChange={(event) => handleTestTypeChange(event.target.value as LoadTestType)}
             disabled={running}
           >
             <option value="image-upload">이미지 업로드 (비동기 OCR)</option>
@@ -339,6 +423,17 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
 
       <div className="form-grid load-grid">
         <label className="field">
+          <span>부하 방식</span>
+          <select
+            value={rateMode}
+            onChange={(event) => handleRateModeChange(event.target.value as RateMode)}
+            disabled={running}
+          >
+            <option value="max">최대 처리량</option>
+            <option value="fixed">워커당 TPS 제한</option>
+          </select>
+        </label>
+        <label className="field">
           <span>워커 수</span>
           <input
             type="number"
@@ -349,13 +444,13 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
           />
         </label>
         <label className="field">
-          <span>워커당 TPS (0=최대)</span>
+          <span>워커당 TPS</span>
           <input
             type="number"
-            min={0}
+            min={1}
             value={workerTps}
             onChange={(event) => setWorkerTps(toInt(event.target.value))}
-            disabled={running}
+            disabled={running || rateMode === 'max'}
           />
         </label>
         <label className="field">
@@ -403,6 +498,23 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         </>
       ) : (
         <>
+          <div className="form-grid">
+            <label className="field">
+              <span>데이터 생성 방식</span>
+              <input value={`가상 계근 데이터 (${WEIGHING_PROFILE_NAME})`} disabled readOnly />
+            </label>
+            <label className="field">
+              <span>비교 캡처 최대 건수</span>
+              <input
+                type="number"
+                min={0}
+                value={evidenceLimit}
+                onChange={(event) => setEvidenceLimit(toInt(event.target.value))}
+                disabled={running}
+              />
+              <span className="hint">0은 전체 캡처입니다.</span>
+            </label>
+          </div>
           {isBulk ? (
             <label className="field">
               <span>벌크 크기 (요청당 행 수)</span>
@@ -415,16 +527,6 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
               />
             </label>
           ) : null}
-          <label className="field">
-            <span>JSON 템플릿</span>
-            <textarea
-              className="json-template"
-              value={jsonTemplate}
-              onChange={(event) => setJsonTemplate(event.target.value)}
-              rows={6}
-              disabled={running}
-            />
-          </label>
         </>
       )}
 
@@ -463,6 +565,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         <Metric label="성공" value={snapshot.success} tone="success" />
         <Metric label="실패" value={snapshot.fail} tone={snapshot.fail > 0 ? 'error' : undefined} />
         <Metric label="현재 TPS" value={round(snapshot.currentTps)} />
+        <Metric label="평균 TPS" value={round(averageTps)} />
         <Metric label="성공률" value={`${successRate.toFixed(1)}%`} />
         <Metric label="진행" value={`${round(snapshot.elapsedSec)}s`} />
         <Metric label="평균(ms)" value={round(snapshot.avgLatencyMs)} />
@@ -470,6 +573,7 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         <Metric label="p99(ms)" value={round(snapshot.p99LatencyMs)} />
         <Metric label="최대(ms)" value={round(snapshot.maxLatencyMs)} />
         <Metric label="인플라이트" value={snapshot.inFlight} />
+        <Metric label="캡처" value={`${snapshot.evidenceCaptured}/${snapshot.evidenceDropped}`} />
         <Metric
           label="상태코드"
           value={
@@ -507,11 +611,143 @@ function LoadTestPanel({ apiBaseUrl, testRunId, deviceId, onRunComplete }: Props
         <button type="button" className="button secondary" onClick={submitResult} disabled={!hasResult || running}>
           결과 API 전송
         </button>
+        {isWeighing ? (
+          <>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={exportEvidenceRequests}
+              disabled={!hasEvidence || running}
+            >
+              전송 데이터 다운로드
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={exportEvidenceResponses}
+              disabled={!hasEvidence || running}
+            >
+              응답 JSON 다운로드
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={exportEvidenceComparison}
+              disabled={!hasEvidence || running}
+            >
+              요청/응답 비교
+            </button>
+          </>
+        ) : null}
       </div>
 
       {submitState ? <p className="hint">{submitState}</p> : null}
     </section>
   )
+}
+
+function buildEvidenceComparison(
+  evidence: LoadEvidence,
+  testRunId: string,
+  testType: LoadTestType,
+) {
+  const rows = evidence.items.flatMap((item) => {
+    const sentRows = extractRequestRows(item.requestBody)
+    const responseRows = extractResponseRows(item.responseBody)
+    return sentRows.map((sent, rowIndex) => {
+      const response = responseRows[rowIndex] ?? null
+      const matched = response ? rowMatches(sent, response.request, response.item) : false
+      return {
+        evidenceIndex: item.index,
+        workerId: item.workerId,
+        requestSeq: item.requestSeq,
+        rowIndex,
+        status: item.status,
+        ok: item.ok,
+        latencyMs: item.latencyMs,
+        matched,
+        sent,
+        responseRequest: response?.request ?? null,
+        stored: response?.item ?? null,
+        error: item.error,
+      }
+    })
+  })
+
+  const matchedCount = rows.filter((row) => row.matched).length
+
+  return {
+    testRunId,
+    testType,
+    generatedAt: new Date().toISOString(),
+    capturedRequests: evidence.capturedCount,
+    droppedRequests: evidence.droppedCount,
+    comparedRows: rows.length,
+    matchedRows: matchedCount,
+    mismatchedRows: rows.length - matchedCount,
+    rows,
+  }
+}
+
+function flattenEvidenceRequestRows(evidence: LoadEvidence): unknown[] {
+  return evidence.items.flatMap((item) => extractRequestRows(item.requestBody))
+}
+
+function extractRequestRows(body: unknown): unknown[] {
+  if (isRecord(body) && Array.isArray(body.items)) {
+    return body.items
+  }
+  return typeof body === 'undefined' ? [] : [body]
+}
+
+function extractResponseRows(body: unknown): Array<{ request: unknown; item: unknown }> {
+  if (!isRecord(body)) return []
+
+  if (Array.isArray(body.items)) {
+    const requests = Array.isArray(body.requests) ? body.requests : []
+    return body.items.map((item, index) => ({
+      request: requests[index] ?? null,
+      item,
+    }))
+  }
+
+  if ('item' in body) {
+    return [{ request: body.request ?? null, item: body.item }]
+  }
+
+  return []
+}
+
+function rowMatches(sent: unknown, responseRequest: unknown, stored: unknown): boolean {
+  const echoed = isRecord(responseRequest) ? responseRequest : null
+  const storedRow = isRecord(stored) ? stored : null
+  if (!storedRow) return false
+
+  return (
+    fieldEquals(sent, echoed, storedRow, 'ticketId') &&
+    fieldEquals(sent, echoed, storedRow, 'vehicleNo') &&
+    fieldEquals(sent, echoed, storedRow, 'grossWeightKg') &&
+    fieldEquals(sent, echoed, storedRow, 'tareWeightKg')
+  )
+}
+
+function fieldEquals(
+  sent: unknown,
+  echoed: Record<string, unknown> | null,
+  stored: Record<string, unknown>,
+  field: string,
+): boolean {
+  const sentValue = isRecord(sent) ? sent[field] : undefined
+  const expected = echoed?.[field] ?? sentValue
+  return normalizeComparable(expected) === normalizeComparable(stored[field])
+}
+
+function normalizeComparable(value: unknown): string {
+  return typeof value === 'number' ? String(value) : String(value ?? '')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function Metric({

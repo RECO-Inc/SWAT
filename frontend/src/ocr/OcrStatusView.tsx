@@ -13,6 +13,9 @@ interface OcrStatusItem {
   ocrStatusCode?: number
   latencyMs?: number
   error?: string
+  provider?: string
+  parsed?: unknown
+  final?: unknown
   result?: unknown
   queuedAt: string
   startedAt?: string
@@ -419,9 +422,11 @@ function OcrStatusView({ apiBaseUrl }: Props) {
                   <td className="cell-error">
                     {item.error
                       ? item.error
-                      : item.ocrStatusCode
-                        ? `HTTP ${item.ocrStatusCode}`
-                        : '-'}
+                      : item.provider
+                        ? `${item.provider}${item.ocrStatusCode ? ` · HTTP ${item.ocrStatusCode}` : ''}`
+                        : item.ocrStatusCode
+                          ? `HTTP ${item.ocrStatusCode}`
+                          : '-'}
                   </td>
                   <td>
                     <button
@@ -478,15 +483,31 @@ function OcrStatusView({ apiBaseUrl }: Props) {
                 닫기
               </button>
             </div>
-            <pre>
-              {detail.result !== undefined
-                ? JSON.stringify(detail.result, null, 2)
-                : '저장된 결과가 없습니다.'}
-            </pre>
+            <div className="ocr-detail-grid">
+              <ResultBlock title="최종 매핑" value={detail.final} />
+              <ResultBlock title="OCR 원본 파싱" value={detail.parsed} />
+            </div>
+            <details className="json-preview" open={detail.final === undefined && detail.parsed === undefined}>
+              <summary>전체 OCR 응답</summary>
+              <pre>
+                {detail.result !== undefined
+                  ? JSON.stringify(detail.result, null, 2)
+                  : '저장된 결과가 없습니다.'}
+              </pre>
+            </details>
           </div>
         </div>
       ) : null}
     </section>
+  )
+}
+
+function ResultBlock({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div className="result-box">
+      <strong>{title}</strong>
+      <pre>{value === undefined ? '없음' : JSON.stringify(value, null, 2)}</pre>
+    </div>
   )
 }
 

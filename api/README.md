@@ -89,7 +89,13 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
 
-The metrics response is Prometheus text format and includes request, upload, weighing-row, in-flight, and async queue counters.
+The metrics response is Prometheus text format. Key series:
+
+- `swat_http_requests_total{method,route,status_class,test_run_id}` — TPS and success/error breakdown
+- `swat_http_request_duration_seconds_bucket{method,route,test_run_id}` — latency histogram for p95/p99
+- `swat_upload_*`, `swat_weighing_rows_total`, `swat_ocr_*`, `swat_async_queue_depth`
+
+`test_run_id` is taken from the `X-Test-Run-Id` header (`unknown` when absent). Grafana dashboards and PromQL examples live in `docs/monitoring.md`.
 
 ### Upload Weighing Slip Image (Async OCR)
 
@@ -142,6 +148,35 @@ curl -X POST http://localhost:8080/api/weighing-slip/upload-sync \
 This endpoint runs OCR inline and responds (HTTP 200) only after the OCR service returns, including the parsed OCR `result` and `latencyMs`. If `OCR_API_URL` is not configured it returns HTTP 503.
 
 Note: sync mode is bound by the OCR service throughput. If the OCR backend processes requests serially (one at a time), high-concurrency sync load will queue for a long time. Use sync for single/low-concurrency latency checks, and use the async endpoint for high-TPS load tests.
+
+The OCR service currently returns a payload shaped like:
+
+```json
+{
+  "provider": "upstage",
+  "parsed": {
+    "ocr_disposal_company_name": "에코사이클",
+    "ocr_amount": "2520",
+    "ocr_car_number": "87더2150",
+    "car_full_weight": "20220",
+    "car_empty_weight": "17700",
+    "request_id": "...",
+    "template_id": ""
+  },
+  "final": {
+    "ocr.full_weight": "20220",
+    "ocr.empty_weight": "17700",
+    "ocr.amount": "2520",
+    "ocr.car_number": "87더2150",
+    "ocr.disposal_company": "에코사이클"
+  }
+}
+```
+
+The API keeps the full OCR body in `result` and also exposes `provider`,
+`parsed`, and `final` as top-level fields in sync responses and OCR status/result
+responses. `final` is present when `OCR_MAP=true` and contains the normalized
+fields to inspect first.
 
 ### OCR Configuration
 

@@ -4,6 +4,7 @@ import LoadTestPanel from './load/LoadTestPanel'
 import FileUpload from './components/FileUpload'
 import AnalysisView from './analysis/AnalysisView'
 import OcrStatusView from './ocr/OcrStatusView'
+import WeighingDataView from './weighing/WeighingDataView'
 import type { RunRecord } from './load/loadTypes'
 
 const MAX_UPLOAD_BYTES = 100 * 1024
@@ -14,7 +15,7 @@ type RequestState = {
   data?: unknown
 }
 
-type View = 'console' | 'ocr' | 'analysis'
+type View = 'console' | 'weighing' | 'ocr' | 'analysis'
 
 const defaultApiBaseUrl =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
@@ -198,7 +199,13 @@ function App() {
   }
 
   const pageTitle =
-    view === 'console' ? '부하 테스트' : view === 'ocr' ? 'OCR 현황' : '결과 분석'
+    view === 'console'
+      ? '부하 테스트'
+      : view === 'weighing'
+        ? '계근 데이터'
+        : view === 'ocr'
+          ? 'OCR 현황'
+          : '결과 분석'
 
   return (
     <div className="layout">
@@ -222,6 +229,15 @@ function App() {
           >
             <NavIcon name="bolt" />
             <span>부하 테스트</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-item${view === 'weighing' ? ' active' : ''}`}
+            aria-current={view === 'weighing' ? 'page' : undefined}
+            onClick={() => setView('weighing')}
+          >
+            <NavIcon name="chart" />
+            <span>계근 데이터</span>
           </button>
           <button
             type="button"
@@ -380,6 +396,14 @@ function App() {
               testRunId={testRunId}
               deviceId={deviceId}
               onRunComplete={addRun}
+            />
+          </div>
+
+          <div className="view" hidden={view !== 'weighing'}>
+            <WeighingDataView
+              apiBaseUrl={normalizedApiBaseUrl}
+              testRunId={testRunId}
+              deviceId={deviceId}
             />
           </div>
 

@@ -1,0 +1,497 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "이미지 업로드 (계근증)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 90 },
+              { "color": "green", "value": 100 }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 1 },
+      "id": 101,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$image_routes\", status_class=~\"2xx|3xx\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "이미지 업로드 성공 TPS",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 10, "x": 6, "y": 1 },
+      "id": 102,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (route) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$image_routes\"}[1m]))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "title": "이미지 업로드 TPS (엔드포인트별)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 1 },
+      "id": 103,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status_class) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$image_routes\"}[1m])) / ignoring(status_class) group_left sum(rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$image_routes\"}[1m]))",
+          "legendFormat": "{{status_class}}",
+          "refId": "A"
+        }
+      ],
+      "title": "이미지 업로드 상태 비율",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "id": 104,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(swat_http_request_duration_seconds_bucket{test_run_id=~\"$test_run_id\", route=~\"$image_routes\"}[5m])))",
+          "legendFormat": "p95 {{route}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(swat_http_request_duration_seconds_bucket{test_run_id=~\"$test_run_id\", route=~\"$image_routes\"}[5m])))",
+          "legendFormat": "p99 {{route}}",
+          "refId": "B"
+        }
+      ],
+      "title": "이미지 업로드 지연 p95 / p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "id": 105,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(swat_ocr_pending)",
+          "legendFormat": "ocr pending",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(swat_async_queue_depth{queue=\"upload\"})",
+          "legendFormat": "upload queue",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_ocr_dropped_total[1m]))",
+          "legendFormat": "ocr dropped/s",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_upload_accepted_total[1m]))",
+          "legendFormat": "upload accepted/s",
+          "refId": "D"
+        }
+      ],
+      "title": "이미지 업로드 / OCR 파이프라인",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 200,
+      "panels": [],
+      "title": "계근 데이터 업로드",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 90 },
+              { "color": "green", "value": 100 }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 16 },
+      "id": 201,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\", status_class=~\"2xx|3xx\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "계근 데이터 API 성공 TPS",
+      "description": "계근 데이터 API가 2xx/3xx로 성공 응답한 HTTP 요청 수/초입니다. 단건과 벌크 모두 API 호출 1번을 1 TPS로 계산하므로, 벌크 요청 1건에 여러 row가 들어 있어도 API 성공 TPS는 1만 증가합니다. 인증의 100 TPS 기준은 이 값으로 판단하고, Row TPS는 벌크 내부 행 처리량을 보기 위한 참고 지표입니다.",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 16 },
+      "id": 202,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_weighing_rows_total[1m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "계근 데이터 Row TPS",
+      "description": "벌크 API는 API TPS와 row TPS가 다릅니다. bulk_size x API TPS = row TPS.",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 16 },
+      "id": 203,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (route) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[1m]))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "title": "계근 데이터 API TPS (엔드포인트별)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 23 },
+      "id": 204,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status_class) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[1m])) / ignoring(status_class) group_left sum(rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[1m]))",
+          "legendFormat": "{{status_class}}",
+          "refId": "A"
+        }
+      ],
+      "title": "계근 데이터 상태 비율",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 23 },
+      "id": 205,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(swat_http_request_duration_seconds_bucket{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[5m])))",
+          "legendFormat": "p95 {{route}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(swat_http_request_duration_seconds_bucket{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[5m])))",
+          "legendFormat": "p99 {{route}}",
+          "refId": "B"
+        }
+      ],
+      "title": "계근 데이터 지연 p95 / p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 23 },
+      "id": 206,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[1m]))",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "계근 데이터 TPS (API 인스턴스별)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "id": 300,
+      "panels": [],
+      "title": "공통",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+      "id": 301,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$image_routes\", status_class=~\"2xx|3xx\"}[1m]))",
+          "legendFormat": "image upload",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\", status_class=~\"2xx|3xx\"}[1m]))",
+          "legendFormat": "weighing data API",
+          "refId": "B"
+        }
+      ],
+      "title": "인증 시나리오별 성공 TPS 비교",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 31 },
+      "id": 302,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$image_routes\"}[1m]))",
+          "legendFormat": "image {{instance}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance) (rate(swat_http_requests_total{test_run_id=~\"$test_run_id\", route=~\"$weighing_routes\"}[1m]))",
+          "legendFormat": "weighing {{instance}}",
+          "refId": "B"
+        }
+      ],
+      "title": "인스턴스별 TPS (시나리오 분리)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["swat", "certification"],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(swat_http_requests_total, test_run_id)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Test Run ID",
+        "multi": true,
+        "name": "test_run_id",
+        "query": {
+          "query": "label_values(swat_http_requests_total, test_run_id)",
+          "refId": "Prometheus-test_run_id-Variable-Query"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "POST /api/weighing-slip/upload|POST /api/weighing-slip/upload-only|POST /api/weighing-slip/upload-sync",
+          "value": "POST /api/weighing-slip/upload|POST /api/weighing-slip/upload-only|POST /api/weighing-slip/upload-sync"
+        },
+        "hide": 2,
+        "label": "Image Routes",
+        "name": "image_routes",
+        "options": [
+          {
+            "selected": true,
+            "text": "POST /api/weighing-slip/upload|POST /api/weighing-slip/upload-only|POST /api/weighing-slip/upload-sync",
+            "value": "POST /api/weighing-slip/upload|POST /api/weighing-slip/upload-only|POST /api/weighing-slip/upload-sync"
+          }
+        ],
+        "query": "POST /api/weighing-slip/upload|POST /api/weighing-slip/upload-only|POST /api/weighing-slip/upload-sync",
+        "type": "constant"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "POST /api/weighing-data|POST /api/weighing-data/bulk",
+          "value": "POST /api/weighing-data|POST /api/weighing-data/bulk"
+        },
+        "hide": 2,
+        "label": "Weighing Routes",
+        "name": "weighing_routes",
+        "options": [
+          {
+            "selected": true,
+            "text": "POST /api/weighing-data|POST /api/weighing-data/bulk",
+            "value": "POST /api/weighing-data|POST /api/weighing-data/bulk"
+          }
+        ],
+        "query": "POST /api/weighing-data|POST /api/weighing-data/bulk",
+        "type": "constant"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SWAT Certification",
+  "uid": "swat-certification",
+  "version": 2
+}

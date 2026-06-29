@@ -44,6 +44,10 @@ curl -i http://localhost:8080/health
 
 HAProxy stats are available at `http://localhost:8404`.
 
+### Monitoring
+
+Prometheus (`http://localhost:9090`) and Grafana (`http://localhost:3000`, default `admin` / `swat`) start with the Docker Compose stack. See `docs/monitoring.md` for certification metrics and PromQL examples.
+
 ### OCR Modes
 
 The weighing-slip upload path can forward images to an external OCR service in two
@@ -195,4 +199,38 @@ python3 load-test/upload_image.py \
   --workers 100 \
   --rate-per-worker 1 \
   --duration 600
+```
+
+## Weighing Data Virtual Generator
+
+Generate sample weighing JSON from the real CSV distribution profile, send it to the API, and download before/after comparison files.
+
+Web console: sidebar **계근 데이터** is for sample generation and response
+comparison, not for sustained TPS load.
+
+For max-throughput TPS checks, use the web console **부하 테스트** panel and select
+**계근 데이터 단건** or **계근 데이터 벌크**. The panel switches to closed-loop
+max throughput mode for weighing data tests, uses the same virtual weighing
+record generator as the sample screen, tracks request count/current TPS/average
+TPS, and enables download of the sent data JSON, actual response JSON, and
+request/response comparison JSON after the run.
+
+CLI:
+
+```sh
+# generate only
+python3 load-test/weighing_data.py generate --count 10 --output load-test/out/generated.json
+
+# generate + send + comparison files
+python3 load-test/weighing_data.py run \
+  --url http://192.168.0.9:19090 \
+  --count 10 \
+  --test-run-id CERT-WEIGHING-001 \
+  --output-dir load-test/out
+
+# fetch stored server records
+python3 load-test/weighing_data.py fetch \
+  --url http://192.168.0.9:19090 \
+  --test-run-id CERT-WEIGHING-001 \
+  --output load-test/out/server.json
 ```
